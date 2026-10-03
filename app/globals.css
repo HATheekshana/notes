@@ -8,3 +8,6 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 
 .resources-section{margin-top:38px;padding-top:30px;border-top:1px solid var(--border)}.resource-hint{font-size:13px;margin:9px 0 16px}.resource-message{color:var(--accent);font-size:14px}.resources-section .banner{margin:15px 0}.resources-section .lesson-row strong{overflow-wrap:anywhere}.banner.success{align-items:center;flex-wrap:wrap}.banner.success>span{flex:1;min-width:180px}.banner.success>.actions button{align-self:auto}.resources-section .section-heading{gap:12px;flex-wrap:wrap}
+
+/* Keep subject navigation reachable on short screens. */
+.sidebar{overflow-y:auto}
