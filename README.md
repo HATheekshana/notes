@@ -31,6 +31,9 @@ The default scripts bind to the local machine. To expose a hosted instance, conf
 
 ## Included
 
+- Publish-success notification with **Back to notes** and **New note** actions.
+- Subject PDF libraries with admin upload/delete and reader downloads (4 MB per PDF). Run `supabase/resources.sql` for cloud storage; see [UPDATE-RESOURCES.md](UPDATE-RESOURCES.md) for an existing deployment.
+
 - Overview with five subject cards, lesson counts and reading progress.
 - Subject pages, tag filters, global full-text search and shareable note routes.
 - Reading view with subject/topic navigation, table of contents, math, code, and completion toggle.

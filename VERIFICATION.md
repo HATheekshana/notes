@@ -1,4 +1,4 @@
-# Verification — 29 September 2026
+# Verification — 3 October 2026
 
 Tested with Node.js 24.14.0 and Next.js 16.3.6 on Windows.
 
@@ -6,13 +6,15 @@ Tested with Node.js 24.14.0 and Next.js 16.3.6 on Windows.
 | --- | --- |
 | Production build | Passed |
 | TypeScript check | Passed |
-| Domain, Supabase adapter and PostgreSQL tests | 5 passed |
+| Domain, Supabase adapter, PDF validation and PostgreSQL tests | 7 passed |
 | API integration smoke test | Passed |
 | Desktop browser at 1440px | Passed |
 | Mobile browser at 390px | Passed, no horizontal overflow |
 | Browser console / runtime errors, final run | None |
 | Dependency audit after upgrade | 0 vulnerabilities reported |
 | Vercel runtime without credentials | Safe 503 responses; no SQLite file created |
+
+The 3 October update passed the production build and a focused browser test for publish-success Back/New note actions (including preserved subject and empty new editor), all five resource sections, PDF upload, refresh persistence, byte-for-byte download, subject isolation, unauthorized upload/delete rejection, invalid PDF and path rejection, mobile layout and confirmed deletion. Desktop/mobile resource screenshots were visually inspected. The Supabase Storage adapter was tested with mocked HTTP responses; live bucket access remains unverified without credentials. Run `supabase/resources.sql` before testing the deployed feature.
 
 Browser checks used headless Microsoft Edge through Playwright. They exercised five subject cards, dark/light persistence, global search, lesson navigation, KaTeX rendering, syntax highlighting, table of contents, completion persistence, administrator sign-in, live Markdown preview, AI fallback comparison and acceptance, draft privacy, publishing and confirmed deletion. Screenshots were also visually reviewed.
 

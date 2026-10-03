@@ -8,7 +8,7 @@ Use **Vercel Hobby + Supabase Free + optional Groq Free**. You create accounts i
 2. Wait for the database to be ready.
 3. Open **SQL Editor → New query**.
 4. Open `supabase/setup.sql` from this project, copy its complete contents into the editor and select **Run**.
-5. In the Table Editor, check that `notes` contains **Introduction to Algorithms**.
+5. In the Table Editor, check that `notes` contains **Introduction to Algorithms**. Then run `supabase/resources.sql` in a new SQL query to create the PDF storage bucket.
 6. Find your project URL in the **Connect** dialog. It looks like `https://your-project.supabase.co`.
 7. Under **Settings → API Keys**, create/copy a backend **secret key** beginning with `sb_secret_`. This is different from the database password and the publishable key.
 
