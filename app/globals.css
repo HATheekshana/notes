@@ -11,3 +11,15 @@
 
 /* Keep subject navigation reachable on short screens. */
 .sidebar{overflow-y:auto}
+.note-nav{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:20px 0}
+.note-nav.bottom{margin-top:32px}
+.note-nav-link{display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);text-decoration:none;min-width:0}
+.note-nav-link:hover{background:var(--hover);border-color:var(--accent)}
+.note-nav-link svg{flex-shrink:0}
+.note-nav-link.next{justify-content:flex-end;text-align:right}
+.note-nav-link span{display:flex;flex-direction:column;min-width:0}
+.note-nav-link small{color:var(--muted);font-size:12px}
+.note-nav-link strong{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note-nav.top .note-nav-link{padding:8px 12px}
+.note-nav.top .note-nav-link strong{display:none}
+.note-nav.top .note-nav-link small{color:var(--text);font-size:13px}
