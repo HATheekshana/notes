@@ -1,0 +1,770 @@
+diff --git a/README.md b/README.md
+index 3cc1733..807d435 100644
+--- a/README.md
++++ b/README.md
+@@ -34,6 +34,7 @@ The default scripts bind to the local machine. To expose a hosted instance, conf
+ - Publish-success notification with **Back to notes** and **New note** actions.
+ - Subject PDF libraries with admin upload/delete and reader downloads (4 MB per PDF). Run `supabase/resources.sql` for cloud storage; see [UPDATE-RESOURCES.md](UPDATE-RESOURCES.md) for an existing deployment.
+ 
++- Per-subject **Storage** page with nested folders and file uploads (PDF, images, Office files, ZIP); admins manage, readers browse and download. Run `supabase/storage.sql`; see [UPDATE-STORAGE.md](UPDATE-STORAGE.md).
+ - Overview with five subject cards, lesson counts and reading progress.
+ - Subject pages, tag filters, global full-text search and shareable note routes.
+ - Reading view with subject/topic navigation, table of contents, math, code, and completion toggle.
+diff --git a/UPDATE-STORAGE.md b/UPDATE-STORAGE.md
+new file mode 100644
+index 0000000..1180f8d
+--- /dev/null
++++ b/UPDATE-STORAGE.md
+@@ -0,0 +1,21 @@
++# Add the Storage section to your existing site
++
++Every subject page now has a **Storage** card between the subject banner and the lessons. It opens `/subjects/<SUBJECT>/storage`, a separate page where everyone can browse folders and open or download files, and the signed-in administrator can create folders, upload files, rename and delete.
++
++## Apply the update
++
++1. Open **Supabase → SQL Editor → New query**, paste the full contents of `supabase/storage.sql`, and run it. **Success. No rows returned** is normal. It is safe to run more than once.
++2. Copy the new and changed files into your repository, commit and push. Vercel redeploys automatically.
++3. No new environment variables are needed. It reuses `SUPABASE_URL`, `SUPABASE_SECRET_KEY` and `ADMIN_PASSWORD`.
++4. Sign in at **Manage notes**, open a subject, select **Storage**, then **New folder** / **Upload files**.
++
++Running locally without Supabase also works: metadata goes in the SQLite file and files go in `data/storage/<subject>/`. Include that folder in local backups.
++
++## Rules
++
++- Allowed: PDF, PNG/JPG/GIF/WebP, DOC/DOCX, PPT/PPTX, XLS/XLSX, TXT, MD, CSV, ZIP. HTML and SVG are blocked on purpose because they can run scripts.
++- Max **4 MB per file** (fits Vercel's request limit). Folders can nest 6 levels deep, with up to 1000 items per subject.
++- File contents are checked against their extension (e.g. a `.pdf` must start with `%PDF-`). Contents are not scanned for malware.
++- Uploading a name that already exists in the folder saves it as `name (2).pdf`. Renaming keeps the original file extension.
++- Deleting a folder deletes everything inside it. Files live in a private `subject-storage` bucket and are only reachable through the website's API.
++- The existing **Resources & PDFs** section is unchanged and still works.
+diff --git a/app/api/storage/route.ts b/app/api/storage/route.ts
+new file mode 100644
+index 0000000..e1829ae
+--- /dev/null
++++ b/app/api/storage/route.ts
+@@ -0,0 +1,75 @@
++import { isAdmin, sameOrigin } from '@/lib/auth';
++import { createFolder, deleteItem, listItems, readFileItem, renameItem, uploadFile } from '@/lib/storage';
++import { InputError, MAX_FILE_BYTES, extensionOf, fileTypes, isUuid, validStorageSubject } from '@/lib/storage-model';
++export const runtime = 'nodejs';
++export const dynamic = 'force-dynamic';
++export const maxDuration = 60;
++
++const noStore = { 'Cache-Control': 'no-store' };
++const denied = () => Response.json({ error: 'Administrator login required.' }, { status: 401 });
++function failure(e: unknown) {
++  if (e instanceof InputError) return Response.json({ error: e.message }, { status: e.code === 'ENOENT' ? 404 : 400 });
++  return Response.json({ error: 'Storage unavailable. Check Supabase Storage and run supabase/storage.sql.' }, { status: 503 });
++}
++const subjectOf = (v: unknown) => { const s = String(v || ''); if (!validStorageSubject(s)) throw new InputError('Invalid subject.'); return s; };
++const parentOf = (v: unknown) => { if (v === null || v === undefined || v === '') return null; if (!isUuid(v)) throw new InputError('Invalid folder.'); return v; };
++
++// GET ?subject=FOA            -> every folder/file in the subject (the client builds the tree)
++// GET ?subject=FOA&id=<uuid>  -> the file itself; add &view=1 to open PDFs/images in the browser
++export async function GET(req: Request) {
++  const params = new URL(req.url).searchParams;
++  try {
++    const subject = subjectOf(params.get('subject')), id = params.get('id');
++    if (id === null) return Response.json(await listItems(subject), { headers: noStore });
++    const { item, bytes, mime } = await readFileItem(subject, id);
++    const inline = params.get('view') === '1' && !!fileTypes[extensionOf(item.name)]?.inline;
++    const ascii = item.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
++    return new Response(new Blob([Buffer.from(bytes)], { type: mime }), { headers: {
++      'Content-Type': mime,
++      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(item.name)}`,
++      'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store',
++    } });
++  } catch (e) { return failure(e); }
++}
++
++// POST multipart (subject, parentId, file)           -> upload a file
++// POST json {action:'folder', subject, parentId, name} -> create a folder
++export async function POST(req: Request) {
++  if (!sameOrigin(req) || !await isAdmin()) return denied();
++  try {
++    if ((req.headers.get('content-type') || '').startsWith('multipart/form-data')) {
++      if (Number(req.headers.get('content-length')) > MAX_FILE_BYTES + 65536) throw new InputError('Files must be 4 MB or smaller.');
++      const form = await req.formData(), file = form.get('file');
++      if (!(file instanceof File)) throw new InputError('Choose a file to upload.');
++      if (file.size > MAX_FILE_BYTES) throw new InputError('Files must be 4 MB or smaller.');
++      return Response.json(await uploadFile(subjectOf(form.get('subject')), parentOf(form.get('parentId')), file.name, new Uint8Array(await file.arrayBuffer())), { status: 201 });
++    }
++    const raw = await req.text();
++    if (raw.length > 4096) throw new InputError('Request too large.');
++    let body: Record<string, unknown>;
++    try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
++    if (body.action !== 'folder') throw new InputError('Invalid request.');
++    return Response.json(await createFolder(subjectOf(body.subject), parentOf(body.parentId), body.name), { status: 201 });
++  } catch (e) { return failure(e); }
++}
++
++// PATCH json {subject, id, name} -> rename a folder or file
++export async function PATCH(req: Request) {
++  if (!sameOrigin(req) || !await isAdmin()) return denied();
++  try {
++    const raw = await req.text();
++    if (raw.length > 4096) throw new InputError('Request too large.');
++    let body: Record<string, unknown>;
++    try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
++    await renameItem(subjectOf(body.subject), String(body.id || ''), body.name);
++    return Response.json({ ok: true });
++  } catch (e) { return failure(e); }
++}
++
++// DELETE ?subject=FOA&id=<uuid> -> delete a file, or a folder with everything inside it
++export async function DELETE(req: Request) {
++  if (!sameOrigin(req) || !await isAdmin()) return denied();
++  const params = new URL(req.url).searchParams;
++  try { await deleteItem(subjectOf(params.get('subject')), params.get('id') || ''); return Response.json({ ok: true }); }
++  catch (e) { return failure(e); }
++}
+diff --git a/app/globals.css b/app/globals.css
+index b345134..912f219 100644
+--- a/app/globals.css
++++ b/app/globals.css
+@@ -23,3 +23,18 @@
+ .note-nav.top .note-nav-link{padding:8px 12px}
+ .note-nav.top .note-nav-link strong{display:none}
+ .note-nav.top .note-nav-link small{color:var(--text);font-size:13px}
++
++/* Storage section */
++.storage-card{display:flex;align-items:center;gap:18px;padding:18px 22px;margin:-12px 0 35px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);text-decoration:none}
++.storage-card:hover{background:var(--hover);border-color:var(--subject-color,var(--accent))}
++.storage-card>div{flex:1;min-width:0}.storage-card strong{display:block;font-size:15px;margin-bottom:4px}.storage-card div>span{font-size:12px;color:var(--muted)}.storage-card>svg{color:var(--muted);flex-shrink:0}
++.storage-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--muted)}
++.storage-crumbs span{display:inline-flex;align-items:center;gap:6px}.storage-crumbs a{color:var(--muted);text-decoration:none}.storage-crumbs a:hover{color:var(--accent)}.storage-crumbs strong{color:var(--text);overflow-wrap:anywhere}
++.storage-form,.storage-rename{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
++.storage-form{padding:14px 16px;margin:0 0 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
++.storage-form input,.storage-rename input{flex:1;min-width:160px;padding:9px 12px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font:inherit;font-size:14px}
++.storage-form .primary,.storage-rename .primary{margin:0;width:auto;padding:9px 16px}.storage-rename{flex:1;min-width:220px}.storage-rename .secondary{padding:9px 14px}
++.storage-name{text-decoration:none;color:inherit}.storage-name strong{overflow-wrap:anywhere}
++.lesson-row a.secondary,.lesson-row button.secondary{text-decoration:none;color:var(--text)}
++.text-button.inline{display:inline;margin:0;text-decoration:underline}
++@media(max-width:760px){.storage-card{margin-top:-8px}}
+diff --git a/components/storage.tsx b/components/storage.tsx
+new file mode 100644
+index 0000000..7cc108e
+--- /dev/null
++++ b/components/storage.tsx
+@@ -0,0 +1,126 @@
++'use client';
++import { useCallback, useEffect, useRef, useState } from 'react';
++import Link from 'next/link';
++import { ArrowLeft, ChevronRight, Download, ExternalLink, File as FileIcon, FileText, Folder, FolderPlus, Image as ImageIcon, Pencil, Trash2, Upload } from 'lucide-react';
++import { MAX_FILE_BYTES, acceptAttribute, children, extensionOf, fileTypes, formatSize, trail, type StorageItem } from '@/lib/storage-model';
++
++async function json(response: Response) {
++  const data = await response.json().catch(() => ({}));
++  if (!response.ok) throw Error(data.error || 'Something went wrong.');
++  return data;
++}
++const base = (subject: string) => '/subjects/' + subject + '/storage';
++const icon = (item: StorageItem) => {
++  if (item.kind === 'folder') return <Folder size={20} />;
++  const ext = extensionOf(item.name);
++  return ext === 'pdf' ? <FileText size={20} /> : ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext) ? <ImageIcon size={20} /> : <FileIcon size={20} />;
++};
++
++export default function Storage({ subject, subjectName, folderId, admin }: { subject: string; subjectName: string; folderId?: string; admin: boolean }) {
++  const [items, setItems] = useState<StorageItem[]>([]), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
++  const [error, setError] = useState(''), [message, setMessage] = useState('');
++  const [creating, setCreating] = useState(false), [folderName, setFolderName] = useState('');
++  const [renaming, setRenaming] = useState<string | null>(null), [renameValue, setRenameValue] = useState('');
++  const input = useRef<HTMLInputElement>(null);
++  const api = '/api/storage?subject=' + encodeURIComponent(subject);
++  const parentId = folderId || null;
++
++  const load = useCallback(async () => { setItems(await json(await fetch(api, { cache: 'no-store' }))); }, [api]);
++  useEffect(() => {
++    let active = true;
++    setLoading(true); setError('');
++    fetch(api, { cache: 'no-store' }).then(json).then(d => { if (active) setItems(d); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
++    return () => { active = false; };
++  }, [api]);
++  useEffect(() => { setCreating(false); setRenaming(null); setMessage(''); }, [folderId]);
++
++  const path = trail(items, parentId), missing = !loading && !error && path === null;
++  const rows = children(items, parentId);
++  const run = async (fn: () => Promise<string | void>) => {
++    setBusy(true); setError(''); setMessage('');
++    try { const done = await fn(); await load(); if (done) setMessage(done); }
++    catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); }
++    finally { setBusy(false); }
++  };
++
++  const createFolder = () => run(async () => {
++    await json(await fetch('/api/storage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'folder', subject, parentId, name: folderName }) }));
++    setCreating(false); setFolderName(''); return 'Folder created.';
++  });
++  const upload = (files: File[]) => run(async () => {
++    const failed: string[] = []; let ok = 0;
++    for (const file of files) {
++      try {
++        if (file.size > MAX_FILE_BYTES) throw Error('larger than 4 MB');
++        const form = new FormData(); form.set('subject', subject); if (parentId) form.set('parentId', parentId); form.set('file', file);
++        await json(await fetch('/api/storage', { method: 'POST', body: form })); ok++;
++      } catch (e) { failed.push(`${file.name}: ${e instanceof Error ? e.message : 'failed'}`); }
++    }
++    if (input.current) input.current.value = '';
++    if (failed.length) throw Error((ok ? `${ok} uploaded. ` : '') + 'Could not upload ' + failed.join(' · '));
++    return ok === 1 ? 'File uploaded. It is available to readers.' : `${ok} files uploaded. They are available to readers.`;
++  });
++  const rename = (item: StorageItem) => run(async () => {
++    await json(await fetch('/api/storage', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subject, id: item.id, name: renameValue }) }));
++    setRenaming(null); return 'Renamed.';
++  });
++  const remove = (item: StorageItem) => {
++    const inside = item.kind === 'folder' ? ' Everything inside it will be deleted too.' : '';
++    if (!window.confirm(`Delete “${item.name}”?${inside} This cannot be undone.`)) return;
++    void run(async () => { await json(await fetch(api + '&id=' + encodeURIComponent(item.id), { method: 'DELETE' })); return item.kind === 'folder' ? 'Folder deleted.' : 'File deleted.'; });
++  };
++
++  const parent = path && path.length ? path[path.length - 1].parentId : null;
++  const back = path && path.length ? (parent ? base(subject) + '/' + parent : base(subject)) : '/subjects/' + subject;
++  const backLabel = path && path.length ? (parent ? 'Back' : 'Back to Storage') : 'Back to ' + subject;
++
++  return <>
++    <Link href={back} className="text-button"><ArrowLeft size={16} />{backLabel}</Link>
++    <div className="eyebrow">{subject} / STORAGE</div>
++    <div className="page-heading"><div><h1>{path && path.length ? path[path.length - 1].name : 'Storage'}<span className="heading-dot">.</span></h1><p className="muted">Folders, PDFs and files for {subjectName}.</p></div>
++      {admin && !missing && <div className="actions">
++        <input ref={input} type="file" multiple accept={acceptAttribute} aria-label="Choose files to upload" hidden disabled={busy} onChange={e => { const files = Array.from(e.target.files || []); if (files.length) void upload(files); }} />
++        <button className="secondary" disabled={busy} onClick={() => { setCreating(true); setError(''); }}><FolderPlus size={16} />New folder</button>
++        <button className="secondary" disabled={busy} onClick={() => input.current?.click()}><Upload size={16} />{busy ? 'Working…' : 'Upload files'}</button>
++      </div>}
++    </div>
++
++    <nav className="storage-crumbs" aria-label="Folder path">
++      <Link href={base(subject)}>Storage</Link>
++      {(path || []).map((f, i) => <span key={f.id}><ChevronRight size={14} />{i === path!.length - 1 ? <strong aria-current="page">{f.name}</strong> : <Link href={base(subject) + '/' + f.id}>{f.name}</Link>}</span>)}
++    </nav>
++
++    {!admin && <p className="resource-hint muted">Anyone can view and download. <Link className="text-button inline" href="/admin">Sign in to manage files</Link></p>}
++    {admin && <p className="resource-hint muted">PDF, images, Office files, text, CSV or ZIP · Up to 4 MB each · Visible to all readers</p>}
++
++    {error && <div className="banner error" role="alert"><span>{error}</span><button className="text-button" onClick={() => { setError(''); setLoading(true); load().catch(e => setError(e.message)).finally(() => setLoading(false)); }}>Retry</button></div>}
++    {message && <p role="status" className="resource-message">{message}</p>}
++
++    {creating && admin && <form className="storage-form" onSubmit={e => { e.preventDefault(); void createFolder(); }}>
++      <Folder size={18} /><input autoFocus aria-label="Folder name" placeholder="Folder name" value={folderName} maxLength={80} onChange={e => setFolderName(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setCreating(false); }} />
++      <button className="secondary" type="button" disabled={busy} onClick={() => setCreating(false)}>Cancel</button><button className="primary" disabled={busy || !folderName.trim()}>Create</button>
++    </form>}
++
++    {loading ? <p className="muted">Loading storage…</p> : missing ? <div className="empty">This folder does not exist or was deleted.<Link className="secondary" href={base(subject)}>Back to Storage</Link></div> :
++      <div className="lesson-list">
++        {rows.map(item => <div className="lesson-row" key={item.id}>
++          <span className="file-icon">{icon(item)}</span>
++          {renaming === item.id
++            ? <form className="storage-rename" onSubmit={e => { e.preventDefault(); void rename(item); }}><input autoFocus aria-label={'New name for ' + item.name} value={renameValue} maxLength={140} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setRenaming(null); }} /><button className="primary" disabled={busy || !renameValue.trim()}>Save</button><button type="button" className="secondary" onClick={() => setRenaming(null)}>Cancel</button></form>
++            : item.kind === 'folder'
++              ? <Link className="storage-name" href={base(subject) + '/' + item.id}><strong>{item.name}</strong><span>Folder · {items.filter(i => i.parentId === item.id).length} items</span></Link>
++              : <div><strong>{item.name}</strong><span>{formatSize(item.size)} · {new Date(item.createdAt).toLocaleDateString()}</span></div>}
++          {renaming !== item.id && item.kind === 'file' && <>
++            {fileTypes[extensionOf(item.name)]?.inline && <a className="secondary" href={api + '&id=' + item.id + '&view=1'} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Open</a>}
++            <a className="secondary" href={api + '&id=' + item.id} download={item.name}><Download size={16} />Download</a>
++          </>}
++          {renaming !== item.id && item.kind === 'folder' && <Link className="secondary" href={base(subject) + '/' + item.id}>Open<ChevronRight size={16} /></Link>}
++          {admin && renaming !== item.id && <>
++            <button className="icon-button" disabled={busy} aria-label={'Rename ' + item.name} onClick={() => { setRenaming(item.id); setRenameValue(item.kind === 'file' ? item.name.replace(/\.[^.]+$/, '') : item.name); }}><Pencil size={17} /></button>
++            <button className="icon-button" disabled={busy} aria-label={'Delete ' + item.name} onClick={() => remove(item)}><Trash2 size={17} /></button>
++          </>}
++        </div>)}
++        {!rows.length && !error && <div className="empty"><Folder size={30} /><h3>{parentId ? 'This folder is empty' : 'Nothing here yet'}</h3><p>{admin ? 'Create a folder or upload files to get started.' : 'Files will appear here when they are added.'}</p></div>}
++      </div>}
++  </>;
++}
+diff --git a/components/workspace.tsx b/components/workspace.tsx
+index c41cd4d..9f690ae 100644
+--- a/components/workspace.tsx
++++ b/components/workspace.tsx
+@@ -2,10 +2,11 @@
+ import { useEffect,useState } from 'react';
+ import Link from 'next/link';
+ import { usePathname,useRouter } from 'next/navigation';
+-import { ArrowLeft,ArrowRight,BookOpen,Boxes,Braces,Check,ChevronRight,Clock,Cpu,Database,FileText,Globe,GraduationCap,LayoutDashboard,LogOut,Menu,Moon,Plus,Search,Settings2,Sparkles,Sun,Trash2,X } from 'lucide-react';
++import { ArrowLeft,ArrowRight,BookOpen,Boxes,Braces,Check,ChevronRight,Clock,Cpu,Database,FileText,FolderOpen,Globe,GraduationCap,LayoutDashboard,LogOut,Menu,Moon,Plus,Search,Settings2,Sparkles,Sun,Trash2,X } from 'lucide-react';
+ import { subjects,type Note } from '@/lib/model';
+ import NoteMarkdown,{headingId} from './markdown';
+ import Resources from './resources';
++import Storage from './storage';
+ import Comments from './comments';
+ import NoteNav from './note-nav';
+ const icons={Braces,Cpu,Globe,Database,Boxes};
+@@ -13,7 +14,7 @@ const blank=(subject='FOA')=>({subject,title:'',content:'',tags:[] as string[],p
+ type Draft=ReturnType<typeof blank>&{id?:string};
+ async function request(url:string,options?:RequestInit){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw Error(d.error||'Something went wrong.');return d;}
+ export default function Workspace(){
+- const path=usePathname();const router=useRouter();const parts=path.split('/').filter(Boolean);const adminPage=parts[0]==='admin';const subject=subjects.find(s=>s.id===parts[1]);const noteId=parts[0]==='notes'?parts[1]:undefined;
++ const path=usePathname();const router=useRouter();const parts=path.split('/').filter(Boolean);const adminPage=parts[0]==='admin';const subject=subjects.find(s=>s.id===parts[1]);const noteId=parts[0]==='notes'?parts[1]:undefined;const storagePage=parts[0]==='subjects'&&parts[2]==='storage'&&!!subject&&parts.length<=4;
+  const [notes,setNotes]=useState<Note[]>([]),[loaded,setLoaded]=useState(false),[admin,setAdmin]=useState(false),[configured,setConfigured]=useState(true),[password,setPassword]=useState(''),[dark,setDark]=useState(false),[mobile,setMobile]=useState(false),[query,setQuery]=useState(''),[tag,setTag]=useState(''),[completed,setCompleted]=useState<string[]>([]),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[draft,setDraft]=useState<Draft|null>(null),[tags,setTags]=useState(''),[suggestion,setSuggestion]=useState<{content:string;original:string;message:string}|null>(null),[deleteId,setDeleteId]=useState<string|null>(null),[dirty,setDirty]=useState(false);
+  const [publishedNotice,setPublishedNotice]=useState(false);
+  const reload=async()=>{const [n,s]=await Promise.all([request('/api/notes'),request('/api/session')]);setNotes(n);setAdmin(s.admin);setConfigured(s.configured);setLoaded(true);};
+@@ -35,7 +36,7 @@ export default function Workspace(){
+  return <div className="app-shell">
+  <aside className={'sidebar '+(mobile?'open':'')}><Link href="/" className="brand"><span className="brand-icon">R<span>z</span></span><span>RenxZero<small>YOUR STUDY SPACE</small></span></Link><button className="mobile-close icon-button" aria-label="Close navigation" onClick={()=>setMobile(false)}><X size={20}/></button><div className="workspace-label">WORKSPACE</div><Link className={'nav-item '+(path==='/'?'selected':'')} href="/"><LayoutDashboard size={18}/>Overview</Link><div className="workspace-label subjects-label">YOUR SUBJECTS <span>05</span></div>{subjects.map(s=>{const Icon=icons[s.icon];return <div key={s.id}><Link href={'/subjects/'+s.id} className={'nav-item '+(activeSubject?.id===s.id?'selected':'')}><Icon size={18} style={{color:s.color}}/>{s.id}<span className="nav-count">{published.filter(n=>n.subject===s.id).length}</span></Link></div>})}<div className="sidebar-bottom"><div className="study-note"><GraduationCap size={21}/><strong>A little progress, every day.</strong><span>Your knowledge, one note at a time.</span></div><Link href="/admin" className={'nav-item '+(adminPage?'selected':'')}><Settings2 size={18}/>Manage notes<ChevronRight size={16}/></Link><div className="profile"><span className="avatar">RZ</span><div><strong>RenxZero</strong><small>University workspace</small></div></div></div></aside>
+  {mobile&&<button aria-label="Close menu" className="backdrop" onClick={()=>setMobile(false)}/>}
+- <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={14}/><strong>{adminPage?'Manage notes':activeSubject?.id||'Overview'}</strong></div><div className="top-actions"><label className="search"><Search size={17}/><input aria-label="Search all notes" placeholder="Search your notes…" value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌕</kbd></label><button className="icon-button" aria-label={dark?'Switch to light mode':'Switch to dark mode'} onClick={()=>{setDark(!dark);try{localStorage.setItem('renxzero-theme',!dark?'dark':'light');}catch{}}}>{dark?<Sun size={19}/>:<Moon size={19}/>}</button></div></header>
++ <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={14}/>{storagePage?<><Link href={'/subjects/'+subject!.id}>{subject!.id}</Link><ChevronRight size={14}/><strong>Storage</strong></>:<strong>{adminPage?'Manage notes':activeSubject?.id||'Overview'}</strong>}</div><div className="top-actions"><label className="search"><Search size={17}/><input aria-label="Search all notes" placeholder="Search your notes…" value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌕</kbd></label><button className="icon-button" aria-label={dark?'Switch to light mode':'Switch to dark mode'} onClick={()=>{setDark(!dark);try{localStorage.setItem('renxzero-theme',!dark?'dark':'light');}catch{}}}>{dark?<Sun size={19}/>:<Moon size={19}/>}</button></div></header>
+  {error&&<div className="banner error" role="alert">{error}<button aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
+  {notice&&<div className="banner success" role="status"><span>{notice}</span><button aria-label="Dismiss message" onClick={()=>setNotice('')}><X size={16}/></button></div>}
+  {query?<main className="content"><div className="eyebrow">YOUR KNOWLEDGE BASE</div><h1>Search results</h1><p className="muted">{matches.length} {matches.length===1?'note':'notes'} matching “{query}”</p><div className="lesson-list">{matches.map(n=><Link href={'/notes/'+n.id} key={n.id} className="lesson-row"><FileText/><div><strong>{n.title}</strong><span>{n.subject} · {n.tags.join(' · ')}{!n.published?' · Draft':''}</span></div><ArrowRight size={18}/></Link>)}</div>{!matches.length&&<div className="empty">No matching notes. Try a subject name, tag, or different keyword.</div>}</main>
+@@ -45,9 +46,11 @@ export default function Workspace(){
+  :<><div className="admin-summary">{notes.length} notes <span>·</span> {notes.filter(n=>!n.published).length} drafts</div><div className="lesson-list">{notes.map(n=><div className="lesson-row" key={n.id}><span className="file-icon"><FileText size={20}/></span><div><strong>{n.title}</strong><span>{n.subject} · Updated {new Date(n.updatedAt).toLocaleDateString()}</span></div><span className={'pill '+(n.published?'published':'')}>{n.published?'Published':'Draft'}</span><button className="secondary" onClick={()=>edit(n)}>Edit</button><button className="icon-button" aria-label={'Delete '+n.title} onClick={()=>setDeleteId(n.id)}><Trash2 size={17}/></button></div>)}</div>{!notes.length&&<div className="empty">Your first note starts here. Select New note to begin.</div>}</>}
+  </main>
+  :noteId?<>{note?<div className="reading-layout"><main className="reading"><Link href={'/subjects/'+note.subject} className="text-button"><ArrowLeft size={16}/>Back to {note.subject}</Link><NoteNav notes={published.filter(n=>n.subject===note.subject)} id={note.id} position="top"/><div className="eyebrow">{note.subject} / LESSON {String(published.filter(n=>n.subject===note.subject).findIndex(n=>n.id===note.id)+1).padStart(2,'0')}</div><h1>{note.title}</h1><div className="reading-meta"><span><Clock size={15}/>{Math.max(1,Math.ceil(note.content.split(/\s+/).length/200))} min read</span><span>Updated {new Date(note.updatedAt).toLocaleDateString()}</span>{!note.published&&<span className="pill">Draft</span>}</div><div className="tags">{note.tags.map(t=><span className="tag" key={t}>{t}</span>)}</div><NoteMarkdown content={note.content}/><div className="completion-box"><div><strong>One more concept, understood.</strong><p className="muted">Keep track of your learning on this device.</p></div><button className={completed.includes(note.id)?'secondary':'primary'} onClick={toggleComplete}><Check size={17}/>{completed.includes(note.id)?'Completed':'Mark as complete'}</button></div><NoteNav notes={published.filter(n=>n.subject===note.subject)} id={note.id} position="bottom"/>{note.published&&<Comments noteId={note.id} dark={dark}/>}</main><aside className="toc"><div className="workspace-label">ON THIS PAGE</div>{note.content.split('\n').filter(l=>/^## / .test(l)).map((l,i)=><a href={'#'+headingId(l.slice(3))} key={i}>{l.slice(3)}</a>)}<div className="toc-bottom"><BookOpen size={18}/><p>Learn at your own pace.<br/>Come back whenever you need.</p></div></aside></div>:<main className="content empty">{loaded?'This note does not exist or is not published.':'Loading your lesson…'}<Link href="/">Back to overview</Link></main>}</>
++ :storagePage&&subject?<main className="content"><Storage key={subject.id+'/'+(parts[3]||'')} subject={subject.id} subjectName={subject.name} folderId={parts[3]} admin={admin}/></main>
+  :<main className="content"><div className="eyebrow">{subject?'SUBJECT WORKSPACE':'A PLACE FOR EVERYTHING YOU LEARN'}</div><div className="page-heading"><div><h1>{subject?subject.name:'Your study workspace'}<span className="heading-dot">.</span></h1><p className="muted">{subject?subject.description:'Five subjects. One clear mind. Pick up where you left off.'}</p></div><Link className="primary" href="/admin"><Plus size={17}/>Add a note</Link></div>
+  {!subject&&<><div className="stats"><div><span className="stat-icon purple"><BookOpen size={20}/></span><div><strong>05</strong><span>Subjects this semester</span></div></div><div><span className="stat-icon blue"><FileText size={20}/></span><div><strong>{String(published.length).padStart(2,'0')}</strong><span>Notes in your library</span></div></div><div><span className="stat-icon green"><Check size={20}/></span><div><strong>{published.filter(n=>completed.includes(n.id)).length}<small> / {published.length}</small></strong><span>Lessons completed</span></div></div></div><div className="section-heading"><h2>Your subjects</h2><span>THIS SEMESTER</span></div><div className="subject-grid">{subjects.map(s=>{const Icon=icons[s.icon],items=published.filter(n=>n.subject===s.id);return <Link href={'/subjects/'+s.id} className="subject-card" key={s.id} style={{'--subject-color':s.color} as React.CSSProperties}><div className="card-top"><span className="subject-icon"><Icon size={24}/></span><ArrowRight size={19}/></div><span className="subject-code">{s.id}</span><h3>{s.name}</h3><p>{s.description}</p><div className="card-divider"/><div className="card-meta"><span>{items.length} {items.length===1?'lesson':'lessons'}</span><span>{progress(items)}% complete</span></div><progress max="100" value={progress(items)} aria-label={s.id+' completion'}/></Link>})}</div></>}
+  {subject&&<div className="subject-banner" style={{'--subject-color':subject.color} as React.CSSProperties}><span className="subject-icon"><CardIcon size={28}/></span><div><strong>{published.filter(n=>n.subject===subject.id).length} lessons</strong><span>{progress(published.filter(n=>n.subject===subject.id))}% completed on this device</span></div><progress max="100" value={progress(published.filter(n=>n.subject===subject.id))} aria-label="Subject completion"/></div>}
++ {subject&&<Link className="storage-card" href={'/subjects/'+subject.id+'/storage'} style={{'--subject-color':subject.color} as React.CSSProperties}><span className="subject-icon"><FolderOpen size={24}/></span><div><strong>Storage</strong><span>Folders, PDFs and files for {subject.id}</span></div><ArrowRight size={18}/></Link>}
+  <div className="section-heading"><h2>{subject?'Lessons & topics':'Your latest notes'}</h2><span>{subject?subject.id:'KEEP LEARNING'}</span></div>{subject&&<div className="tag-filters"><button className={!tag?'active':''} onClick={()=>setTag('')}>All topics</button>{[...new Set(published.filter(n=>n.subject===subject.id).flatMap(n=>n.tags))].map(t=><button key={t} className={tag===t?'active':''} onClick={()=>setTag(t)}>{t}</button>)}</div>}<div className="lesson-list">{visible.map(n=><Link key={n.id} href={'/notes/'+n.id} className="lesson-row"><span className="file-icon">{completed.includes(n.id)?<Check size={22}/>:<FileText size={22}/>}</span><div><strong>{n.title}</strong><span>{n.subject} <i>·</i> {n.tags.slice(0,2).join(' · ')} <i>·</i> {Math.max(1,Math.ceil(n.content.split(/\s+/).length/200))} min read</span></div><span className="read-label">Read lesson</span><ArrowRight size={18}/></Link>)}</div>{!visible.length&&<div className="empty"><BookOpen size={30}/><h3>{loaded?'A fresh page for your ideas':'Loading your notes…'}</h3><p>{loaded?'Add your first lesson to start building this subject.':''}</p>{loaded&&<Link href="/admin" className="secondary">Add a note<Plus size={16}/></Link>}</div>}{subject&&<Resources key={subject.id} subject={subject.id} admin={admin}/>}<footer>Made for curious minds.<span>RenxZero / Notes</span></footer></main>}
+  </div>
+  {publishedNotice&&adminPage&&<div className="modal-overlay"><section className="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title" aria-describedby="publish-description"><span className="large-icon"><Check size={26}/></span><h2 id="publish-title">Publishing done!</h2><p id="publish-description" className="muted">Your note is published. Would you like to go back to your notes or make a new one?</p><div className="actions"><button className="secondary" onClick={()=>{setDraft(null);setDirty(false);setPublishedNotice(false);setNotice('');}}>Go back</button><button className="primary" onClick={()=>edit(undefined,draft?.subject)}><Plus size={16}/>Make new note</button></div></section></div>}
+diff --git a/lib/storage-model.ts b/lib/storage-model.ts
+new file mode 100644
+index 0000000..885e018
+--- /dev/null
++++ b/lib/storage-model.ts
+@@ -0,0 +1,132 @@
++// Pure helpers for the per-subject Storage section (folders + files).
++// No I/O here so the rules can be unit tested and shared with the browser.
++export const MAX_FILE_BYTES = 4 * 1024 * 1024; // keeps uploads inside Vercel's request body limit
++export const MAX_DEPTH = 6; // folders nested deeper than this are rejected
++export const MAX_ITEMS_PER_SUBJECT = 1000;
++
++// Safe-to-show validation failures. Anything else is treated as an infrastructure error by the API.
++export class InputError extends Error { code?: string; }
++
++export type StorageItem = {
++  id: string;
++  subject: string;
++  parentId: string | null;
++  kind: 'folder' | 'file';
++  name: string;
++  size: number;
++  createdAt: string;
++};
++
++export const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
++export const isUuid = (v: unknown): v is string => typeof v === 'string' && uuidPattern.test(v);
++export const validStorageSubject = (s: string) => ['FOA', 'OS', 'IWT', 'DBMS', 'OOP'].includes(s);
++
++// Allowed types. The extension decides the Content-Type we serve, never the browser-supplied one.
++// SVG/HTML are deliberately absent: they can run script when opened.
++type FileType = { mime: string; inline: boolean; sig?: number[][]; text?: boolean };
++const zip = [[0x50, 0x4b, 0x03, 0x04], [0x50, 0x4b, 0x05, 0x06]];
++const ole = [[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]];
++export const fileTypes: Record<string, FileType> = {
++  pdf: { mime: 'application/pdf', inline: true, sig: [[0x25, 0x50, 0x44, 0x46, 0x2d]] },
++  png: { mime: 'image/png', inline: true, sig: [[0x89, 0x50, 0x4e, 0x47]] },
++  jpg: { mime: 'image/jpeg', inline: true, sig: [[0xff, 0xd8, 0xff]] },
++  jpeg: { mime: 'image/jpeg', inline: true, sig: [[0xff, 0xd8, 0xff]] },
++  gif: { mime: 'image/gif', inline: true, sig: [[0x47, 0x49, 0x46, 0x38]] },
++  webp: { mime: 'image/webp', inline: true, sig: [[0x52, 0x49, 0x46, 0x46]] },
++  txt: { mime: 'text/plain', inline: false, text: true },
++  md: { mime: 'text/plain', inline: false, text: true },
++  csv: { mime: 'text/csv', inline: false, text: true },
++  docx: { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', inline: false, sig: zip },
++  pptx: { mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', inline: false, sig: zip },
++  xlsx: { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', inline: false, sig: zip },
++  zip: { mime: 'application/zip', inline: false, sig: zip },
++  doc: { mime: 'application/msword', inline: false, sig: ole },
++  ppt: { mime: 'application/vnd.ms-powerpoint', inline: false, sig: ole },
++  xls: { mime: 'application/vnd.ms-excel', inline: false, sig: ole },
++};
++export const allowedMimeTypes = [...new Set(Object.values(fileTypes).map(t => t.mime))];
++export const acceptAttribute = Object.keys(fileTypes).map(e => '.' + e).join(',');
++export const extensionOf = (name: string) => (/\.([A-Za-z0-9]{1,5})$/.exec(name)?.[1] || '').toLowerCase();
++export const typeOf = (name: string): FileType | undefined => fileTypes[extensionOf(name)];
++
++const control = /[\u0000-\u001f\u007f]/;
++const forbidden = /[\\/:*?"<>|]/; // no /g: .test() on a global regex is stateful
++const forbiddenAll = new RegExp(forbidden.source, 'g');
++
++export function validFolderName(input: unknown): string {
++  if (typeof input !== 'string') throw new InputError('Enter a folder name.');
++  const name = input.normalize('NFC').trim().replace(/\s+/g, ' ');
++  if (!name) throw new InputError('Enter a folder name.');
++  if (name.length > 80) throw new InputError('Folder names must be 80 characters or fewer.');
++  if (control.test(name) || forbidden.test(name) || name === '.' || name === '..') throw new InputError('Folder names cannot contain / \\ : * ? " < > | or be "." / "..".');
++  return name;
++}
++
++export function cleanFileName(input: string): string {
++  const base = input.normalize('NFC').split(/[\\/]/).pop() || '';
++  const ext = extensionOf(base);
++  const stem = base.slice(0, base.length - (ext ? ext.length + 1 : 0)).replace(control, '').replace(forbiddenAll, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120);
++  return (stem || 'file') + (ext ? '.' + ext : '');
++}
++
++// Renaming never changes the file type: the original extension is kept (or appended).
++export function validFileRename(oldName: string, input: unknown): string {
++  if (typeof input !== 'string' || !input.trim()) throw new InputError('Enter a file name.');
++  const ext = extensionOf(oldName);
++  let next = cleanFileName(input);
++  if (ext && extensionOf(next) !== ext) next = cleanFileName(next + '.' + ext);
++  return next;
++}
++
++export function validateFile(name: string, bytes: Uint8Array): { name: string; mime: string } {
++  const clean = cleanFileName(name);
++  const type = typeOf(clean);
++  if (!type) throw new InputError('This file type is not supported. Allowed: PDF, images, Office files, text, CSV and ZIP.');
++  if (!bytes.length) throw new InputError('This file is empty.');
++  if (bytes.length > MAX_FILE_BYTES) throw new InputError('Files must be 4 MB or smaller.');
++  if (type.sig && !type.sig.some(s => s.every((b, i) => bytes[i] === b))) throw new InputError('This file does not match its extension.');
++  if (type.text && bytes.subarray(0, 4096).includes(0)) throw new InputError('This file does not look like text.');
++  return { name: clean, mime: type.mime };
++}
++
++export const children = (items: StorageItem[], parentId: string | null) =>
++  items.filter(i => i.parentId === parentId).sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) : a.kind === 'folder' ? -1 : 1));
++
++export function descendants(items: StorageItem[], id: string): StorageItem[] {
++  const out: StorageItem[] = [];
++  const stack = [id];
++  const seen = new Set<string>();
++  while (stack.length) {
++    const current = stack.pop()!;
++    if (seen.has(current)) continue;
++    seen.add(current);
++    for (const item of items) if (item.parentId === current) { out.push(item); stack.push(item.id); }
++  }
++  return out;
++}
++
++// Path from the root to the given folder, e.g. [Week 1, Slides]. Null if the id does not exist.
++export function trail(items: StorageItem[], folderId: string | null): StorageItem[] | null {
++  const path: StorageItem[] = [];
++  let current = folderId;
++  while (current) {
++    const folder = items.find(i => i.id === current && i.kind === 'folder');
++    if (!folder || path.length > MAX_DEPTH + 1) return null;
++    path.unshift(folder);
++    current = folder.parentId;
++  }
++  return path;
++}
++
++export function uniqueName(name: string, siblings: StorageItem[]): string {
++  const taken = new Set(siblings.map(s => s.name.toLowerCase()));
++  if (!taken.has(name.toLowerCase())) return name;
++  const ext = extensionOf(name);
++  const stem = ext ? name.slice(0, -(ext.length + 1)) : name;
++  for (let n = 2; ; n++) {
++    const candidate = `${stem} (${n})${ext ? '.' + ext : ''}`;
++    if (!taken.has(candidate.toLowerCase())) return candidate;
++  }
++}
++
++export const formatSize = (bytes: number) => bytes < 1024 ? bytes + ' B' : bytes < 1048576 ? (bytes / 1024).toFixed(0) + ' KB' : (bytes / 1048576).toFixed(2) + ' MB';
+diff --git a/lib/storage.ts b/lib/storage.ts
+new file mode 100644
+index 0000000..53d6754
+--- /dev/null
++++ b/lib/storage.ts
+@@ -0,0 +1,141 @@
++import { randomUUID } from 'node:crypto';
++import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
++import { dirname, resolve } from 'node:path';
++import { cloudConfigured, cloudRequired, supabaseRequest } from './supabase-repository.ts';
++import { InputError, MAX_DEPTH, MAX_ITEMS_PER_SUBJECT, descendants, isUuid, trail, uniqueName, validFileRename, validFolderName, validStorageSubject, validateFile, typeOf, type StorageItem } from './storage-model.ts';
++
++const bucket = 'subject-storage';
++const setupError = 'Storage unavailable. Run supabase/storage.sql and check Supabase Storage.';
++
++// ---- metadata (folders + files) -------------------------------------------------------------
++interface Meta {
++  list(subject: string): Promise<StorageItem[]>;
++  insert(item: StorageItem): Promise<void>;
++  rename(subject: string, id: string, name: string): Promise<void>;
++  remove(subject: string, ids: string[]): Promise<void>;
++}
++
++type Row = { id: string; subject: string; parent_id: string | null; kind: 'folder' | 'file'; name: string; size: number; created_at: string };
++const fromRow = (r: Row): StorageItem => ({ id: r.id, subject: r.subject, parentId: r.parent_id, kind: r.kind, name: r.name, size: Number(r.size) || 0, createdAt: r.created_at });
++
++const cloudMeta: Meta = {
++  async list(subject) {
++    const rows: Row[] = [];
++    for (let offset = 0; ; offset += 500) {
++      const page: Row[] = await supabaseRequest(`storage_items?select=*&subject=eq.${subject}&order=created_at.asc,id.asc&limit=500&offset=${offset}`);
++      rows.push(...page);
++      if (page.length < 500) return rows.map(fromRow);
++    }
++  },
++  async insert(i) {
++    await supabaseRequest('storage_items', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ id: i.id, subject: i.subject, parent_id: i.parentId, kind: i.kind, name: i.name, size: i.size, created_at: i.createdAt }) });
++  },
++  async rename(subject, id, name) {
++    const rows: Row[] = await supabaseRequest(`storage_items?id=eq.${id}&subject=eq.${subject}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ name }) });
++    if (!rows[0]) throw new InputError('That item no longer exists.');
++  },
++  async remove(subject, ids) {
++    for (let n = 0; n < ids.length; n += 50) await supabaseRequest(`storage_items?subject=eq.${subject}&id=in.(${ids.slice(n, n + 50).join(',')})`, { method: 'DELETE' });
++  },
++};
++
++const localPath = () => process.env.DATABASE_PATH || resolve('data/renxzero.sqlite');
++let sqlite: Meta | undefined;
++async function localMeta(): Promise<Meta> {
++  if (sqlite) return sqlite;
++  const { DatabaseSync } = await import('node:sqlite'); // never loaded on Vercel
++  const { mkdirSync } = await import('node:fs');
++  mkdirSync(dirname(localPath()), { recursive: true });
++  const db = new DatabaseSync(localPath());
++  db.exec('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS storage_items (id TEXT PRIMARY KEY, subject TEXT NOT NULL, parent_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS storage_items_subject ON storage_items(subject);');
++  sqlite = {
++    list: async subject => (db.prepare('SELECT * FROM storage_items WHERE subject=? ORDER BY created_at, id').all(subject) as unknown as Row[]).map(fromRow),
++    insert: async i => { db.prepare('INSERT INTO storage_items VALUES (?,?,?,?,?,?,?)').run(i.id, i.subject, i.parentId, i.kind, i.name, i.size, i.createdAt); },
++    rename: async (subject, id, name) => { db.prepare('UPDATE storage_items SET name=? WHERE id=? AND subject=?').run(name, id, subject); },
++    remove: async (subject, ids) => { for (const id of ids) db.prepare('DELETE FROM storage_items WHERE id=? AND subject=?').run(id, subject); },
++  };
++  return sqlite;
++}
++
++// ---- file bytes -----------------------------------------------------------------------------
++async function objects(path: string, init: RequestInit = {}) {
++  const origin = new URL(process.env.SUPABASE_URL!);
++  if (origin.protocol !== 'https:') throw Error('Invalid storage URL.');
++  const key = process.env.SUPABASE_SECRET_KEY!;
++  const response = await fetch(`${origin.origin}/storage/v1/${path}`, { ...init, cache: 'no-store', signal: AbortSignal.timeout(25000), headers: { apikey: key, ...(key.startsWith('eyJ') ? { Authorization: `Bearer ${key}` } : {}), ...init.headers } });
++  if (!response.ok) throw Error(setupError);
++  return response;
++}
++const localFile = (subject: string, id: string) => resolve(dirname(localPath()), 'storage', subject, id);
++
++async function putBytes(subject: string, id: string, mime: string, bytes: Uint8Array) {
++  if (cloudConfigured()) await objects(`object/${bucket}/${subject}/${id}`, { method: 'POST', headers: { 'Content-Type': mime, 'x-upsert': 'false' }, body: new Blob([Buffer.from(bytes)], { type: mime }) });
++  else { await mkdir(dirname(localFile(subject, id)), { recursive: true }); await writeFile(localFile(subject, id), bytes, { flag: 'wx' }); }
++}
++async function dropBytes(subject: string, ids: string[]) {
++  if (!ids.length) return;
++  if (cloudConfigured()) for (let n = 0; n < ids.length; n += 100) await objects(`object/${bucket}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: ids.slice(n, n + 100).map(id => `${subject}/${id}`) }) });
++  else await Promise.all(ids.map(id => rm(localFile(subject, id), { force: true })));
++}
++
++// ---- public API (all inputs are validated here, not only in the route) -------------------------
++async function meta(subject: string): Promise<Meta> {
++  if (!validStorageSubject(subject)) throw new InputError('Invalid subject.');
++  if (cloudConfigured()) return cloudMeta;
++  if (cloudRequired()) throw Error('Storage is not configured.');
++  return localMeta();
++}
++const parentFolder = (items: StorageItem[], parentId: string | null) => {
++  if (parentId !== null && !isUuid(parentId)) throw new InputError('Invalid folder.');
++  const path = trail(items, parentId);
++  if (!path) throw new InputError('That folder no longer exists.');
++  return path;
++};
++
++export async function listItems(subject: string) { return (await meta(subject)).list(subject); }
++
++export async function createFolder(subject: string, parentId: string | null, rawName: unknown): Promise<StorageItem> {
++  const db = await meta(subject), name = validFolderName(rawName), items = await db.list(subject);
++  const path = parentFolder(items, parentId);
++  if (path.length >= MAX_DEPTH) throw new InputError(`Folders can be nested up to ${MAX_DEPTH} levels deep.`);
++  if (items.length >= MAX_ITEMS_PER_SUBJECT) throw new InputError('This subject has reached its storage item limit.');
++  if (items.some(i => i.parentId === parentId && i.kind === 'folder' && i.name.toLowerCase() === name.toLowerCase())) throw new InputError('A folder with that name already exists here.');
++  const item: StorageItem = { id: randomUUID(), subject, parentId, kind: 'folder', name, size: 0, createdAt: new Date().toISOString() };
++  await db.insert(item);
++  return item;
++}
++
++export async function uploadFile(subject: string, parentId: string | null, rawName: string, bytes: Uint8Array): Promise<StorageItem> {
++  const db = await meta(subject), { name, mime } = validateFile(rawName, bytes), items = await db.list(subject);
++  parentFolder(items, parentId);
++  if (items.length >= MAX_ITEMS_PER_SUBJECT) throw new InputError('This subject has reached its storage item limit.');
++  const item: StorageItem = { id: randomUUID(), subject, parentId, kind: 'file', name: uniqueName(name, items.filter(i => i.parentId === parentId && i.kind === 'file')), size: bytes.length, createdAt: new Date().toISOString() };
++  await putBytes(subject, item.id, mime, bytes); // bytes first: a failed insert leaves an orphan, never a broken row
++  try { await db.insert(item); } catch (e) { await dropBytes(subject, [item.id]).catch(() => {}); throw e; }
++  return item;
++}
++
++export async function renameItem(subject: string, id: string, rawName: unknown): Promise<void> {
++  if (!isUuid(id)) throw new InputError('Invalid item.');
++  const db = await meta(subject), items = await db.list(subject), item = items.find(i => i.id === id);
++  if (!item) throw new InputError('That item no longer exists.');
++  const name = item.kind === 'folder' ? validFolderName(rawName) : validFileRename(item.name, rawName);
++  if (items.some(i => i.id !== id && i.parentId === item.parentId && i.kind === item.kind && i.name.toLowerCase() === name.toLowerCase())) throw new InputError('An item with that name already exists here.');
++  await db.rename(subject, id, name);
++}
++export async function deleteItem(subject: string, id: string): Promise<void> {
++  if (!isUuid(id)) throw new InputError('Invalid item.');
++  const db = await meta(subject), items = await db.list(subject), item = items.find(i => i.id === id);
++  if (!item) throw new InputError('That item no longer exists.');
++  const all = [item, ...descendants(items, id)];
++  await db.remove(subject, all.map(i => i.id)); // rows first: leftover bytes are harmless, dangling rows are not
++  await dropBytes(subject, all.filter(i => i.kind === 'file').map(i => i.id)).catch(() => {});
++}
++
++export async function readFileItem(subject: string, id: string): Promise<{ item: StorageItem; bytes: Uint8Array; mime: string }> {
++  if (!isUuid(id)) throw new InputError('Invalid item.');
++  const db = await meta(subject), item = (await db.list(subject)).find(i => i.id === id && i.kind === 'file');
++  if (!item) throw Object.assign(new InputError('File not found.'), { code: 'ENOENT' });
++  const bytes = cloudConfigured() ? new Uint8Array(await (await objects(`object/${bucket}/${subject}/${id}`)).arrayBuffer()) : new Uint8Array(await readFile(localFile(subject, id)));
++  return { item, bytes, mime: typeOf(item.name)?.mime || 'application/octet-stream' };
++}
+diff --git a/supabase/storage.sql b/supabase/storage.sql
+new file mode 100644
+index 0000000..539c510
+--- /dev/null
++++ b/supabase/storage.sql
+@@ -0,0 +1,29 @@
++-- Run once in Supabase SQL Editor for the Storage section (folders + files). Safe to rerun.
++-- Existing notes, PDF resources and files are left unchanged.
++begin;
++create table if not exists public.storage_items (
++  id uuid primary key,
++  subject text not null check (subject in ('FOA','OS','IWT','DBMS','OOP')),
++  parent_id uuid references public.storage_items(id) on delete cascade,
++  kind text not null check (kind in ('folder','file')),
++  name text not null check (length(name) between 1 and 140),
++  size bigint not null default 0 check (size >= 0),
++  created_at timestamptz not null default now()
++);
++create index if not exists storage_items_subject_parent on public.storage_items(subject, parent_id);
++alter table public.storage_items enable row level security;
++-- No direct browser access. Only the app server's secret key can read or write this table.
++revoke all on public.storage_items from anon, authenticated;
++grant all on public.storage_items to service_role;
++commit;
++
++-- Private bucket; the website controls access through its server API.
++insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
++values ('subject-storage', 'subject-storage', false, 4194304, array[
++  'application/pdf','image/png','image/jpeg','image/gif','image/webp',
++  'text/plain','text/csv','application/zip','application/msword','application/vnd.ms-powerpoint','application/vnd.ms-excel',
++  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
++  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
++  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])
++on conflict (id) do update set public = false, file_size_limit = 4194304, allowed_mime_types = excluded.allowed_mime_types;
++-- Keep this bucket private and do not add anon/authenticated policies.
+diff --git a/tests/storage.test.ts b/tests/storage.test.ts
+new file mode 100644
+index 0000000..84cf5a7
+--- /dev/null
++++ b/tests/storage.test.ts
+@@ -0,0 +1,122 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { mkdtempSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { InputError, MAX_FILE_BYTES, cleanFileName, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
++
++const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF');
++const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
++const item = (id: string, parentId: string | null, kind: 'folder' | 'file', name = id): StorageItem => ({ id, subject: 'FOA', parentId, kind, name, size: 0, createdAt: '2026-01-01' });
++
++test('folder names are trimmed and reject path tricks, repeatedly (no stateful regex)', () => {
++  assert.equal(validFolderName('  Week   1  '), 'Week 1');
++  for (let i = 0; i < 4; i++) assert.throws(() => validFolderName('a/b'), InputError); // back to back: a /g regex would pass every 2nd call
++  assert.throws(() => validFolderName('..'), InputError);
++  assert.throws(() => validFolderName('x'.repeat(81)), InputError);
++  assert.throws(() => validFolderName('   '), InputError);
++  assert.throws(() => validFolderName('bad\u0000name'), InputError);
++});
++
++test('file validation checks extension, signature, size and text content', () => {
++  assert.deepEqual(validateFile('Lecture 1.PDF', pdf), { name: 'Lecture 1.pdf', mime: 'application/pdf' });
++  assert.equal(validateFile('pic.png', png).mime, 'image/png');
++  assert.throws(() => validateFile('evil.html', pdf), /not supported/);
++  assert.throws(() => validateFile('evil.svg', pdf), /not supported/);
++  assert.throws(() => validateFile('fake.pdf', new TextEncoder().encode('<html>')), /does not match/);
++  assert.throws(() => validateFile('big.pdf', new Uint8Array(MAX_FILE_BYTES + 1)), /4 MB/);
++  assert.throws(() => validateFile('empty.pdf', new Uint8Array(0)), /empty/);
++  assert.throws(() => validateFile('bin.txt', new Uint8Array([65, 0, 66])), /text/);
++  assert.equal(validateFile('notes.txt', new TextEncoder().encode('hello')).mime, 'text/plain');
++});
++
++test('file names are cleaned and renames keep the original extension', () => {
++  assert.equal(cleanFileName('../../etc/pass<>wd.pdf'), 'pass__wd.pdf');
++  assert.equal(cleanFileName('C:\\fakepath\\slides.pptx'), 'slides.pptx');
++  assert.equal(validFileRename('a.pdf', 'Chapter 2'), 'Chapter 2.pdf');
++  assert.equal(validFileRename('a.pdf', 'Chapter 2.pdf'), 'Chapter 2.pdf');
++  assert.equal(validFileRename('a.docx', 'x.pdf'), 'x.pdf.docx');
++  assert.throws(() => validFileRename('a.pdf', '  '), InputError);
++});
++
++test('tree helpers: descendants, trail, unique names', () => {
++  const items = [item('a', null, 'folder'), item('b', 'a', 'folder'), item('c', 'b', 'file'), item('d', null, 'file')];
++  assert.deepEqual(descendants(items, 'a').map(i => i.id).sort(), ['b', 'c']);
++  assert.deepEqual(trail(items, 'b')!.map(i => i.id), ['a', 'b']);
++  assert.deepEqual(trail(items, null), []);
++  assert.equal(trail(items, 'c'), null, 'a file is not a folder');
++  assert.equal(trail(items, 'missing'), null);
++  const loop = [item('x', 'y', 'folder'), item('y', 'x', 'folder')];
++  assert.equal(trail(loop, 'x'), null, 'cyclic data cannot hang');
++  assert.deepEqual(descendants(loop, 'x').length, 2);
++  assert.equal(uniqueName('a.pdf', [item('1', null, 'file', 'A.pdf')]), 'a (2).pdf');
++  assert.equal(uniqueName('a.pdf', []), 'a.pdf');
++});
++
++test('local backend: folders, files, rename, download, recursive delete', async () => {
++  const dir = mkdtempSync(join(tmpdir(), 'storage-'));
++  const env = { ...process.env };
++  delete process.env.SUPABASE_URL; delete process.env.SUPABASE_SECRET_KEY; delete process.env.VERCEL;
++  process.env.DATABASE_PATH = join(dir, 'test.sqlite');
++  const s = await import('../lib/storage.ts');
++  try {
++    const week = await s.createFolder('OS', null, 'Week 1');
++    const slides = await s.createFolder('OS', week.id, 'Slides');
++    await assert.rejects(() => s.createFolder('OS', null, 'week 1'), /already exists/);
++    await assert.rejects(() => s.createFolder('OS', '11111111-1111-4111-8111-111111111111', 'Ghost'), /no longer exists/);
++    await assert.rejects(() => s.createFolder('OS', 'not-a-uuid', 'Bad'), /Invalid folder/);
++    const f1 = await s.uploadFile('OS', slides.id, 'deck.pdf', pdf);
++    const f2 = await s.uploadFile('OS', slides.id, 'deck.pdf', pdf);
++    assert.equal(f2.name, 'deck (2).pdf');
++    await assert.rejects(() => s.uploadFile('OS', null, 'x.exe', pdf), InputError);
++    assert.equal((await s.listItems('OS')).length, 4);
++    assert.equal((await s.listItems('FOA')).length, 0, 'subjects are isolated');
++    const read = await s.readFileItem('OS', f1.id);
++    assert.deepEqual(read.bytes, pdf); assert.equal(read.mime, 'application/pdf');
++    await assert.rejects(() => s.readFileItem('FOA', f1.id), /not found/);
++    await assert.rejects(() => s.readFileItem('OS', slides.id), /not found/, 'a folder is not downloadable');
++    await s.renameItem('OS', f1.id, 'Final slides');
++    assert.equal((await s.listItems('OS')).find(i => i.id === f1.id)!.name, 'Final slides.pdf');
++    await assert.rejects(() => s.renameItem('OS', f2.id, 'Final slides'), /already exists/);
++    await s.deleteItem('OS', week.id);
++    assert.equal((await s.listItems('OS')).length, 0, 'deleting a folder removes everything inside');
++    await assert.rejects(() => s.readFileItem('OS', f1.id), /not found/);
++    await assert.rejects(() => s.listItems('../x'), /Invalid subject/);
++    let deep: string | null = null;
++    for (let i = 0; i < 6; i++) deep = (await s.createFolder('IWT', deep, 'L' + i)).id;
++    await assert.rejects(() => s.createFolder('IWT', deep, 'too deep'), /nested up to/);
++  } finally { process.env = env; }
++});
++
++test('cloud backend uses private server credentials, scoped paths and the Prefer header', async () => {
++  const originalFetch = globalThis.fetch, env = { ...process.env };
++  process.env.SUPABASE_URL = 'https://example.supabase.co'; process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
++  const calls: { url: string; init: RequestInit }[] = [];
++  const rows: Record<string, unknown>[] = [];
++  globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
++    calls.push({ url: String(url), init });
++    const u = String(url), method = init.method || 'GET';
++    if (u.includes('/rest/v1/storage_items')) {
++      if (method === 'POST') { const row = JSON.parse(init.body as string); rows.push(row); return Response.json([row], { status: 201 }); }
++      if (method === 'GET') return Response.json(rows);
++      if (method === 'DELETE') { rows.length = 0; return new Response(null, { status: 204 }); }
++    }
++    return Response.json({});
++  }) as typeof fetch;
++  try {
++    const specifier = '../lib/storage.ts?cloud'; // fresh module instance
++    const s = (await import(specifier)) as typeof import('../lib/storage.ts');
++    const folder = await s.createFolder('DBMS', null, 'Past papers');
++    const file = await s.uploadFile('DBMS', folder.id, 'p1.pdf', pdf);
++    const upload = calls.find(c => c.url.includes('/storage/v1/object/subject-storage/DBMS/'))!;
++    assert.ok(upload.url.endsWith('/' + file.id)); assert.equal((upload.init.headers as Record<string, string>).apikey, 'sb_secret_test');
++    const insert = calls.find(c => c.init.method === 'POST' && c.url.includes('/rest/v1/'))!;
++    assert.equal((insert.init.headers as Record<string, string>).Prefer, 'return=representation');
++    assert.ok(calls.some(c => c.url.includes('subject=eq.DBMS')));
++    await s.deleteItem('DBMS', folder.id);
++    const drop = calls.filter(c => c.init.method === 'DELETE' && c.url.includes('/storage/v1/object/subject-storage')).at(-1)!;
++    assert.deepEqual(JSON.parse(drop.init.body as string), { prefixes: ['DBMS/' + file.id] });
++    globalThis.fetch = (async () => new Response('secret internal details', { status: 500 })) as typeof fetch;
++    await assert.rejects(() => s.listItems('DBMS'), (e: Error) => !(e instanceof InputError) && !/secret internal/.test(e.message));
++  } finally { globalThis.fetch = originalFetch; process.env = env; }
++});

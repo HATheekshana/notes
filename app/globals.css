@@ -23,3 +23,18 @@
 .note-nav.top .note-nav-link{padding:8px 12px}
 .note-nav.top .note-nav-link strong{display:none}
 .note-nav.top .note-nav-link small{color:var(--text);font-size:13px}
+
+/* Storage section */
+.storage-card{display:flex;align-items:center;gap:18px;padding:18px 22px;margin:-12px 0 35px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);text-decoration:none}
+.storage-card:hover{background:var(--hover);border-color:var(--subject-color,var(--accent))}
+.storage-card>div{flex:1;min-width:0}.storage-card strong{display:block;font-size:15px;margin-bottom:4px}.storage-card div>span{font-size:12px;color:var(--muted)}.storage-card>svg{color:var(--muted);flex-shrink:0}
+.storage-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--muted)}
+.storage-crumbs span{display:inline-flex;align-items:center;gap:6px}.storage-crumbs a{color:var(--muted);text-decoration:none}.storage-crumbs a:hover{color:var(--accent)}.storage-crumbs strong{color:var(--text);overflow-wrap:anywhere}
+.storage-form,.storage-rename{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.storage-form{padding:14px 16px;margin:0 0 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+.storage-form input,.storage-rename input{flex:1;min-width:160px;padding:9px 12px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font:inherit;font-size:14px}
+.storage-form .primary,.storage-rename .primary{margin:0;width:auto;padding:9px 16px}.storage-rename{flex:1;min-width:220px}.storage-rename .secondary{padding:9px 14px}
+.storage-name{text-decoration:none;color:inherit}.storage-name strong{overflow-wrap:anywhere}
+.lesson-row a.secondary,.lesson-row button.secondary{text-decoration:none;color:var(--text)}
+.text-button.inline{display:inline;margin:0;text-decoration:underline}
+@media(max-width:760px){.storage-card{margin-top:-8px}}
