@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { InputError, MAX_FILE_BYTES, cleanFileName, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
+import { InputError, MAX_FILE_BYTES, cleanFileName, precheckFile, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
 
 const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF');
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
@@ -37,6 +37,15 @@ test('file names are cleaned and renames keep the original extension', () => {
   assert.equal(validFileRename('a.pdf', 'Chapter 2.pdf'), 'Chapter 2.pdf');
   assert.equal(validFileRename('a.docx', 'x.pdf'), 'x.pdf.docx');
   assert.throws(() => validFileRename('a.pdf', '  '), InputError);
+});
+
+test('precheck flags unsupported, empty and oversized files before upload', () => {
+  assert.equal(precheckFile('a.pdf', 100), '');
+  assert.match(precheckFile('a.exe', 100), /Unsupported/);
+  assert.match(precheckFile('a.html', 100), /Unsupported/);
+  assert.match(precheckFile('a.pdf', 0), /empty/);
+  assert.match(precheckFile('a.pdf', MAX_FILE_BYTES + 1), /4 MB/);
+  assert.equal(precheckFile('a.pdf', MAX_FILE_BYTES), '');
 });
 
 test('tree helpers: descendants, trail, unique names', () => {

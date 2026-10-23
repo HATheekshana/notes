@@ -89,6 +89,14 @@ export function validateFile(name: string, bytes: Uint8Array): { name: string; m
   return { name: clean, mime: type.mime };
 }
 
+// Cheap client-side check (name + size only) so problems show before uploading. The server re-validates everything.
+export function precheckFile(name: string, size: number): string {
+  if (!typeOf(cleanFileName(name))) return 'Unsupported file type';
+  if (!size) return 'File is empty';
+  if (size > MAX_FILE_BYTES) return 'Larger than 4 MB';
+  return '';
+}
+
 export const children = (items: StorageItem[], parentId: string | null) =>
   items.filter(i => i.parentId === parentId).sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) : a.kind === 'folder' ? -1 : 1));
 

@@ -38,3 +38,16 @@
 .lesson-row a.secondary,.lesson-row button.secondary{text-decoration:none;color:var(--text)}
 .text-button.inline{display:inline;margin:0;text-decoration:underline}
 @media(max-width:760px){.storage-card{margin-top:-8px}}
+
+/* Upload review panel */
+.upload-panel{margin:0 0 20px;padding:16px 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+.upload-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.upload-head strong{display:block;font-size:14px;margin-bottom:3px}.upload-head span{font-size:12px;color:var(--muted)}.upload-head .upload-percent{font-size:18px;font-weight:700;color:var(--accent)}
+.progress-track{height:8px;background:var(--sidebar);border-radius:99px;overflow:hidden;margin-bottom:12px}.progress-track.small{height:5px;margin:7px 0 0}
+.progress-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .15s linear}
+.upload-list{list-style:none;margin:0 0 14px;padding:0;max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px}
+.upload-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--border)}.upload-row:last-child{border:0}
+.upload-icon{width:30px;height:30px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);border-radius:7px;flex-shrink:0}
+.upload-row.done .upload-icon{background:#2a9d6a22;color:#2a9d6a}
+.upload-info{flex:1;min-width:0}.upload-info strong{display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.upload-info>span{font-size:11px;color:var(--muted)}
+.upload-error{font-style:normal;color:#d64545}.upload-row.error .upload-icon{background:#d6454522;color:#d64545}
+.upload-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}.upload-actions .primary{margin:0;width:auto;padding:10px 18px}

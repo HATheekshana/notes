@@ -1,0 +1,230 @@
+diff --git a/UPDATE-STORAGE.md b/UPDATE-STORAGE.md
+index 1180f8d..90440a8 100644
+--- a/UPDATE-STORAGE.md
++++ b/UPDATE-STORAGE.md
+@@ -14,6 +14,7 @@ Running locally without Supabase also works: metadata goes in the SQLite file an
+ ## Rules
+ 
+ - Allowed: PDF, PNG/JPG/GIF/WebP, DOC/DOCX, PPT/PPTX, XLS/XLSX, TXT, MD, CSV, ZIP. HTML and SVG are blocked on purpose because they can run scripts.
++- Choosing files does not upload them. They appear in a **Ready to upload** list where you can remove any file, add more, or clear everything, then press **Upload**. Each file and the whole batch show a progress bar, and **Stop upload** keeps the unfinished files in the list.
+ - Max **4 MB per file** (fits Vercel's request limit). Folders can nest 6 levels deep, with up to 1000 items per subject.
+ - File contents are checked against their extension (e.g. a `.pdf` must start with `%PDF-`). Contents are not scanned for malware.
+ - Uploading a name that already exists in the folder saves it as `name (2).pdf`. Renaming keeps the original file extension.
+diff --git a/app/globals.css b/app/globals.css
+index 912f219..07e72fd 100644
+--- a/app/globals.css
++++ b/app/globals.css
+@@ -38,3 +38,16 @@
+ .lesson-row a.secondary,.lesson-row button.secondary{text-decoration:none;color:var(--text)}
+ .text-button.inline{display:inline;margin:0;text-decoration:underline}
+ @media(max-width:760px){.storage-card{margin-top:-8px}}
++
++/* Upload review panel */
++.upload-panel{margin:0 0 20px;padding:16px 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
++.upload-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.upload-head strong{display:block;font-size:14px;margin-bottom:3px}.upload-head span{font-size:12px;color:var(--muted)}.upload-head .upload-percent{font-size:18px;font-weight:700;color:var(--accent)}
++.progress-track{height:8px;background:var(--sidebar);border-radius:99px;overflow:hidden;margin-bottom:12px}.progress-track.small{height:5px;margin:7px 0 0}
++.progress-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .15s linear}
++.upload-list{list-style:none;margin:0 0 14px;padding:0;max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px}
++.upload-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--border)}.upload-row:last-child{border:0}
++.upload-icon{width:30px;height:30px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);border-radius:7px;flex-shrink:0}
++.upload-row.done .upload-icon{background:#2a9d6a22;color:#2a9d6a}
++.upload-info{flex:1;min-width:0}.upload-info strong{display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.upload-info>span{font-size:11px;color:var(--muted)}
++.upload-error{font-style:normal;color:#d64545}.upload-row.error .upload-icon{background:#d6454522;color:#d64545}
++.upload-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}.upload-actions .primary{margin:0;width:auto;padding:10px 18px}
+diff --git a/components/storage.tsx b/components/storage.tsx
+index 7cc108e..1392694 100644
+--- a/components/storage.tsx
++++ b/components/storage.tsx
+@@ -1,14 +1,28 @@
+ 'use client';
+ import { useCallback, useEffect, useRef, useState } from 'react';
+ import Link from 'next/link';
+-import { ArrowLeft, ChevronRight, Download, ExternalLink, File as FileIcon, FileText, Folder, FolderPlus, Image as ImageIcon, Pencil, Trash2, Upload } from 'lucide-react';
+-import { MAX_FILE_BYTES, acceptAttribute, children, extensionOf, fileTypes, formatSize, trail, type StorageItem } from '@/lib/storage-model';
++import { ArrowLeft, Check, ChevronRight, Download, ExternalLink, File as FileIcon, FileText, Folder, FolderPlus, Image as ImageIcon, Pencil, Trash2, Upload, X } from 'lucide-react';
++import { MAX_FILE_BYTES, acceptAttribute, children, extensionOf, fileTypes, formatSize, precheckFile, trail, type StorageItem } from '@/lib/storage-model';
+ 
+ async function json(response: Response) {
+   const data = await response.json().catch(() => ({}));
+   if (!response.ok) throw Error(data.error || 'Something went wrong.');
+   return data;
+ }
++type Queued = { key: string; file: File; state: 'ready' | 'uploading' | 'saving' | 'done' | 'error'; progress: number; error: string };
++// fetch() cannot report upload progress, so uploads use XMLHttpRequest.
++function send(file: File, subject: string, parentId: string | null, holder: { current: XMLHttpRequest | null }, onProgress: (fraction: number) => void) {
++  return new Promise<void>((resolve, reject) => {
++    const x = new XMLHttpRequest(); holder.current = x;
++    x.open('POST', '/api/storage');
++    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
++    x.onload = () => { let d: { error?: string } = {}; try { d = JSON.parse(x.responseText); } catch { /* non-JSON error page */ } if (x.status >= 200 && x.status < 300) resolve(); else reject(Error(d.error || 'Upload failed.')); };
++    x.onerror = () => reject(Error('Network error. Check your connection.'));
++    x.onabort = () => reject(Error('cancelled'));
++    const form = new FormData(); form.set('subject', subject); if (parentId) form.set('parentId', parentId); form.set('file', file);
++    x.send(form);
++  });
++}
+ const base = (subject: string) => '/subjects/' + subject + '/storage';
+ const icon = (item: StorageItem) => {
+   if (item.kind === 'folder') return <Folder size={20} />;
+@@ -22,6 +36,9 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
+   const [creating, setCreating] = useState(false), [folderName, setFolderName] = useState('');
+   const [renaming, setRenaming] = useState<string | null>(null), [renameValue, setRenameValue] = useState('');
+   const input = useRef<HTMLInputElement>(null);
++  const [queue, setQueue] = useState<Queued[]>([]), [uploading, setUploading] = useState(false), [finishedBytes, setFinishedBytes] = useState(0);
++  const queueRef = useRef<Queued[]>([]); queueRef.current = queue;
++  const xhr = useRef<XMLHttpRequest | null>(null), stopped = useRef(false);
+   const api = '/api/storage?subject=' + encodeURIComponent(subject);
+   const parentId = folderId || null;
+ 
+@@ -47,19 +64,50 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
+     await json(await fetch('/api/storage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'folder', subject, parentId, name: folderName }) }));
+     setCreating(false); setFolderName(''); return 'Folder created.';
+   });
+-  const upload = (files: File[]) => run(async () => {
+-    const failed: string[] = []; let ok = 0;
+-    for (const file of files) {
++  const addFiles = (files: File[]) => {
++    setError(''); setMessage('');
++    setQueue(current => [...current, ...files.map(file => { const problem = precheckFile(file.name, file.size); return { key: Math.random().toString(36).slice(2) + Date.now().toString(36), file, state: problem ? 'error' : 'ready', progress: 0, error: problem } as Queued; })]);
++    if (input.current) input.current.value = '';
++  };
++  const patch = (key: string, changes: Partial<Queued>) => setQueue(c => c.map(q => q.key === key ? { ...q, ...changes } : q));
++  const startUpload = async () => {
++    const todo = queueRef.current.filter(q => q.state === 'ready');
++    if (!todo.length) return;
++    stopped.current = false; setUploading(true); setBusy(true); setError(''); setMessage(''); setFinishedBytes(0);
++    let ok = 0, failed = 0;
++    for (const q of todo) {
++      if (stopped.current) break;
++      if (!queueRef.current.some(x => x.key === q.key)) continue; // removed while waiting
++      patch(q.key, { state: 'uploading', progress: 0 });
+       try {
+-        if (file.size > MAX_FILE_BYTES) throw Error('larger than 4 MB');
+-        const form = new FormData(); form.set('subject', subject); if (parentId) form.set('parentId', parentId); form.set('file', file);
+-        await json(await fetch('/api/storage', { method: 'POST', body: form })); ok++;
+-      } catch (e) { failed.push(`${file.name}: ${e instanceof Error ? e.message : 'failed'}`); }
++        await send(q.file, subject, parentId, xhr, f => patch(q.key, { progress: f, state: f >= 1 ? 'saving' : 'uploading' }));
++        ok++; patch(q.key, { state: 'done', progress: 1 }); setFinishedBytes(n => n + q.file.size);
++      } catch (e) {
++        const msg = e instanceof Error ? e.message : 'Upload failed.';
++        if (msg === 'cancelled') patch(q.key, { state: 'ready', progress: 0 });
++        else { failed++; patch(q.key, { state: 'error', error: msg, progress: 0 }); setFinishedBytes(n => n + q.file.size); }
++      }
+     }
+-    if (input.current) input.current.value = '';
+-    if (failed.length) throw Error((ok ? `${ok} uploaded. ` : '') + 'Could not upload ' + failed.join(' · '));
+-    return ok === 1 ? 'File uploaded. It is available to readers.' : `${ok} files uploaded. They are available to readers.`;
+-  });
++    xhr.current = null;
++    setQueue(c => c.filter(q => q.state !== 'done')); // keep failed + untouched files so they can be retried or removed
++    setUploading(false); setBusy(false);
++    try { await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not refresh the list.'); }
++    if (ok) setMessage(ok === 1 ? 'File uploaded. It is available to readers.' : `${ok} files uploaded. They are available to readers.`);
++    if (failed) setError(`${failed} ${failed === 1 ? 'file' : 'files'} could not be uploaded. Remove ${failed === 1 ? 'it' : 'them'} or try again.`);
++  };
++  const stopUpload = () => { stopped.current = true; xhr.current?.abort(); };
++  const removeQueued = (key: string) => setQueue(c => c.filter(q => q.key !== key));
++  useEffect(() => () => { stopped.current = true; xhr.current?.abort(); }, []); // leaving the page cancels the active upload
++  useEffect(() => {
++    if (!uploading) return;
++    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
++    window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn);
++  }, [uploading]);
++  const waiting = queue.filter(q => q.state === 'ready'), active = queue.find(q => q.state === 'uploading' || q.state === 'saving');
++  const pending = queue.filter(q => q.state !== 'error' && q.state !== 'done');
++  const remainingBytes = pending.reduce((n, q) => n + q.file.size, 0);
++  const overall = uploading ? Math.min(100, Math.round(((finishedBytes + (active ? active.file.size * Math.min(active.progress, 1) : 0)) / Math.max(1, finishedBytes + remainingBytes)) * 100)) : 0;
++
+   const rename = (item: StorageItem) => run(async () => {
+     await json(await fetch('/api/storage', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subject, id: item.id, name: renameValue }) }));
+     setRenaming(null); return 'Renamed.';
+@@ -79,7 +127,7 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
+     <div className="eyebrow">{subject} / STORAGE</div>
+     <div className="page-heading"><div><h1>{path && path.length ? path[path.length - 1].name : 'Storage'}<span className="heading-dot">.</span></h1><p className="muted">Folders, PDFs and files for {subjectName}.</p></div>
+       {admin && !missing && <div className="actions">
+-        <input ref={input} type="file" multiple accept={acceptAttribute} aria-label="Choose files to upload" hidden disabled={busy} onChange={e => { const files = Array.from(e.target.files || []); if (files.length) void upload(files); }} />
++        <input ref={input} type="file" multiple accept={acceptAttribute} aria-label="Choose files to upload" hidden disabled={busy} onChange={e => { const files = Array.from(e.target.files || []); if (files.length) addFiles(files); }} />
+         <button className="secondary" disabled={busy} onClick={() => { setCreating(true); setError(''); }}><FolderPlus size={16} />New folder</button>
+         <button className="secondary" disabled={busy} onClick={() => input.current?.click()}><Upload size={16} />{busy ? 'Working…' : 'Upload files'}</button>
+       </div>}
+@@ -96,6 +144,32 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
+     {error && <div className="banner error" role="alert"><span>{error}</span><button className="text-button" onClick={() => { setError(''); setLoading(true); load().catch(e => setError(e.message)).finally(() => setLoading(false)); }}>Retry</button></div>}
+     {message && <p role="status" className="resource-message">{message}</p>}
+ 
++    {admin && queue.length > 0 && <section className="upload-panel" aria-label="Files ready to upload">
++      <div className="upload-head">
++        <div><strong>{uploading ? 'Uploading…' : 'Ready to upload'}</strong><span>{pending.length} {pending.length === 1 ? 'file' : 'files'} · {formatSize(remainingBytes + (uploading ? finishedBytes : 0))} to {path && path.length ? path[path.length - 1].name : 'Storage'}</span></div>
++        {uploading ? <span className="upload-percent">{overall}%</span> : null}
++      </div>
++      {uploading && <div className="progress-track" role="progressbar" aria-label="Overall upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={overall}><div className="progress-fill" style={{ width: overall + '%' }} /></div>}
++      <ul className="upload-list">
++        {queue.map(q => <li key={q.key} className={'upload-row ' + q.state}>
++          <span className="upload-icon">{q.state === 'done' ? <Check size={16} /> : <FileIcon size={16} />}</span>
++          <div className="upload-info">
++            <strong title={q.file.name}>{q.file.name}</strong>
++            <span>{formatSize(q.file.size)}{q.state === 'error' ? <em className="upload-error"> · {q.error}</em> : q.state === 'saving' ? ' · Saving…' : q.state === 'done' ? ' · Uploaded' : q.state === 'uploading' ? ` · ${Math.round(q.progress * 100)}%` : ''}</span>
++            {(q.state === 'uploading' || q.state === 'saving') && <div className="progress-track small" role="progressbar" aria-label={'Upload progress for ' + q.file.name} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(q.progress * 100)}><div className="progress-fill" style={{ width: q.progress * 100 + '%' }} /></div>}
++          </div>
++          <button className="icon-button" aria-label={'Remove ' + q.file.name + ' from the upload list'} disabled={q.state === 'uploading' || q.state === 'saving'} onClick={() => removeQueued(q.key)}><X size={16} /></button>
++        </li>)}
++      </ul>
++      <div className="upload-actions">
++        {uploading ? <button className="secondary" onClick={stopUpload}>Stop upload</button> : <>
++          <button className="secondary" onClick={() => setQueue([])}>Clear all</button>
++          <button className="secondary" onClick={() => input.current?.click()}><Upload size={16} />Add more</button>
++          <button className="primary" disabled={!waiting.length} onClick={() => void startUpload()}>Upload {waiting.length} {waiting.length === 1 ? 'file' : 'files'}</button>
++        </>}
++      </div>
++    </section>}
++
+     {creating && admin && <form className="storage-form" onSubmit={e => { e.preventDefault(); void createFolder(); }}>
+       <Folder size={18} /><input autoFocus aria-label="Folder name" placeholder="Folder name" value={folderName} maxLength={80} onChange={e => setFolderName(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setCreating(false); }} />
+       <button className="secondary" type="button" disabled={busy} onClick={() => setCreating(false)}>Cancel</button><button className="primary" disabled={busy || !folderName.trim()}>Create</button>
+diff --git a/lib/storage-model.ts b/lib/storage-model.ts
+index 885e018..d94a498 100644
+--- a/lib/storage-model.ts
++++ b/lib/storage-model.ts
+@@ -89,6 +89,14 @@ export function validateFile(name: string, bytes: Uint8Array): { name: string; m
+   return { name: clean, mime: type.mime };
+ }
+ 
++// Cheap client-side check (name + size only) so problems show before uploading. The server re-validates everything.
++export function precheckFile(name: string, size: number): string {
++  if (!typeOf(cleanFileName(name))) return 'Unsupported file type';
++  if (!size) return 'File is empty';
++  if (size > MAX_FILE_BYTES) return 'Larger than 4 MB';
++  return '';
++}
++
+ export const children = (items: StorageItem[], parentId: string | null) =>
+   items.filter(i => i.parentId === parentId).sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) : a.kind === 'folder' ? -1 : 1));
+ 
+diff --git a/tests/storage.test.ts b/tests/storage.test.ts
+index 84cf5a7..9452dda 100644
+--- a/tests/storage.test.ts
++++ b/tests/storage.test.ts
+@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
+ import { mkdtempSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+-import { InputError, MAX_FILE_BYTES, cleanFileName, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
++import { InputError, MAX_FILE_BYTES, cleanFileName, precheckFile, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
+ 
+ const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF');
+ const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+@@ -39,6 +39,15 @@ test('file names are cleaned and renames keep the original extension', () => {
+   assert.throws(() => validFileRename('a.pdf', '  '), InputError);
+ });
+ 
++test('precheck flags unsupported, empty and oversized files before upload', () => {
++  assert.equal(precheckFile('a.pdf', 100), '');
++  assert.match(precheckFile('a.exe', 100), /Unsupported/);
++  assert.match(precheckFile('a.html', 100), /Unsupported/);
++  assert.match(precheckFile('a.pdf', 0), /empty/);
++  assert.match(precheckFile('a.pdf', MAX_FILE_BYTES + 1), /4 MB/);
++  assert.equal(precheckFile('a.pdf', MAX_FILE_BYTES), '');
++});
++
+ test('tree helpers: descendants, trail, unique names', () => {
+   const items = [item('a', null, 'folder'), item('b', 'a', 'folder'), item('c', 'b', 'file'), item('d', null, 'file')];
+   assert.deepEqual(descendants(items, 'a').map(i => i.id).sort(), ['b', 'c']);
