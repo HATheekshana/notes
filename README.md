@@ -34,6 +34,7 @@ The default scripts bind to the local machine. To expose a hosted instance, conf
 - Publish-success notification with **Back to notes** and **New note** actions.
 - Subject PDF libraries with admin upload/delete and reader downloads (4 MB per PDF). Run `supabase/resources.sql` for cloud storage; see [UPDATE-RESOURCES.md](UPDATE-RESOURCES.md) for an existing deployment.
 
+- **Installable offline app (PWA):** install from Chrome on Android, read notes offline, get asked before notes update, and save PDFs/files for offline use on request. See [UPDATE-PWA.md](UPDATE-PWA.md).
 - Per-subject **Storage** page with nested folders and file uploads (PDF, images, Office files, ZIP); admins manage, readers browse and download. Run `supabase/storage.sql`; see [UPDATE-STORAGE.md](UPDATE-STORAGE.md).
 - Overview with five subject cards, lesson counts and reading progress.
 - Subject pages, tag filters, global full-text search and shareable note routes.

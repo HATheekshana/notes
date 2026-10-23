@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Check, ChevronRight, Download, ExternalLink, File as FileIcon, FileText, Folder, FolderPlus, Image as ImageIcon, Pencil, Trash2, Upload, X } from 'lucide-react';
+import { SaveOffline, useOnline, useSavedFiles } from './pwa';
 import { MAX_FILE_BYTES, acceptAttribute, children, extensionOf, fileTypes, formatSize, precheckFile, trail, type StorageItem } from '@/lib/storage-model';
 
 async function json(response: Response) {
@@ -36,6 +37,7 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
   const [creating, setCreating] = useState(false), [folderName, setFolderName] = useState('');
   const [renaming, setRenaming] = useState<string | null>(null), [renameValue, setRenameValue] = useState('');
   const input = useRef<HTMLInputElement>(null);
+  const files = useSavedFiles(), online = useOnline();
   const [queue, setQueue] = useState<Queued[]>([]), [uploading, setUploading] = useState(false), [finishedBytes, setFinishedBytes] = useState(0);
   const queueRef = useRef<Queued[]>([]); queueRef.current = queue;
   const xhr = useRef<XMLHttpRequest | null>(null), stopped = useRef(false);
@@ -118,6 +120,8 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
     void run(async () => { await json(await fetch(api + '&id=' + encodeURIComponent(item.id), { method: 'DELETE' })); return item.kind === 'folder' ? 'Folder deleted.' : 'File deleted.'; });
   };
 
+  // The exact URL we open is the one we save, so the service worker can serve it with no network.
+  const filePaths = (item: StorageItem) => { const inline = !!fileTypes[extensionOf(item.name)]?.inline, plain = api + '&id=' + item.id, view = plain + '&view=1'; return { inline, plain, view, key: inline ? view : plain }; };
   const parent = path && path.length ? path[path.length - 1].parentId : null;
   const back = path && path.length ? (parent ? base(subject) + '/' + parent : base(subject)) : '/subjects/' + subject;
   const backLabel = path && path.length ? (parent ? 'Back' : 'Back to Storage') : 'Back to ' + subject;
@@ -142,6 +146,8 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
     {admin && <p className="resource-hint muted">PDF, images, Office files, text, CSV or ZIP · Up to 4 MB each · Visible to all readers</p>}
 
     {error && <div className="banner error" role="alert"><span>{error}</span><button className="text-button" onClick={() => { setError(''); setLoading(true); load().catch(e => setError(e.message)).finally(() => setLoading(false)); }}>Retry</button></div>}
+    {files.error && <div className="banner error" role="alert"><span>{files.error}</span></div>}
+    {!online && <p className="resource-hint muted">You are offline. Only files saved on this device can be opened.</p>}
     {message && <p role="status" className="resource-message">{message}</p>}
 
     {admin && queue.length > 0 && <section className="upload-panel" aria-label="Files ready to upload">
@@ -184,10 +190,13 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
             : item.kind === 'folder'
               ? <Link className="storage-name" href={base(subject) + '/' + item.id}><strong>{item.name}</strong><span>Folder · {items.filter(i => i.parentId === item.id).length} items</span></Link>
               : <div><strong>{item.name}</strong><span>{formatSize(item.size)} · {new Date(item.createdAt).toLocaleDateString()}</span></div>}
-          {renaming !== item.id && item.kind === 'file' && <>
-            {fileTypes[extensionOf(item.name)]?.inline && <a className="secondary" href={api + '&id=' + item.id + '&view=1'} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Open</a>}
-            <a className="secondary" href={api + '&id=' + item.id} download={item.name}><Download size={16} />Download</a>
-          </>}
+          {renaming !== item.id && item.kind === 'file' && (() => { const f = filePaths(item), ready = online || files.isSaved(f.key); return <>
+            {ready ? <>
+              {f.inline && <a className="secondary" href={f.view} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Open</a>}
+              {(online || !f.inline) && <a className="secondary" href={f.plain} download={item.name}><Download size={16} />Download</a>}
+            </> : <span className="muted offline-note">Needs internet</span>}
+            <SaveOffline path={f.key} name={item.name} files={files} disabled={!online} />
+          </>; })()}
           {renaming !== item.id && item.kind === 'folder' && <Link className="secondary" href={base(subject) + '/' + item.id}>Open<ChevronRight size={16} /></Link>}
           {admin && renaming !== item.id && <>
             <button className="icon-button" disabled={busy} aria-label={'Rename ' + item.name} onClick={() => { setRenaming(item.id); setRenameValue(item.kind === 'file' ? item.name.replace(/\.[^.]+$/, '') : item.name); }}><Pencil size={17} /></button>

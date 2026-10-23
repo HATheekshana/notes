@@ -51,3 +51,16 @@
 .upload-info{flex:1;min-width:0}.upload-info strong{display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.upload-info>span{font-size:11px;color:var(--muted)}
 .upload-error{font-style:normal;color:#d64545}.upload-row.error .upload-icon{background:#d6454522;color:#d64545}
 .upload-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}.upload-actions .primary{margin:0;width:auto;padding:10px 18px}
+
+/* Installable app: update prompt, offline notice, install/alert cards */
+.pwa-bar{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;flex-direction:column;align-items:center;gap:10px;padding:0 12px calc(12px + env(safe-area-inset-bottom,0px));pointer-events:none}
+.pwa-bar>*{pointer-events:auto}
+.pwa-pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;background:var(--text);color:var(--bg);border-radius:99px;font-size:12px;font-weight:600;box-shadow:0 4px 16px #0003}
+.pwa-card{display:flex;align-items:center;gap:14px;width:min(560px,100%);padding:14px 16px;background:var(--surface);color:var(--text);border:1px solid var(--accent);border-radius:12px;box-shadow:0 8px 30px #0003}
+.pwa-card>svg{color:var(--accent);flex-shrink:0}.pwa-card>div:nth-child(2){flex:1;min-width:0}.pwa-card strong{display:block;font-size:14px;margin-bottom:3px}.pwa-card span{font-size:12px;color:var(--muted)}
+.pwa-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}.pwa-actions .primary{margin:0;width:auto;padding:9px 14px}.pwa-actions .secondary{padding:9px 12px}
+@media(max-width:520px){.pwa-card{flex-wrap:wrap}.pwa-card>div:nth-child(2){flex-basis:calc(100% - 40px)}.pwa-actions{width:100%;justify-content:flex-end}}
+.saved-badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:#2a9d6a;white-space:nowrap}
+.spin{animation:rz-spin 1s linear infinite}@keyframes rz-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+.offline-note{font-size:12px;white-space:nowrap}
