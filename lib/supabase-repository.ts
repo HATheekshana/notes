@@ -14,7 +14,10 @@ export async function supabaseRequest(path: string, init: RequestInit = {}) {
     ...init, cache: 'no-store', signal: AbortSignal.timeout(15000),
     headers: { apikey: key, ...(key.startsWith('eyJ') ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json', ...init.headers },
   });
-  if (!response.ok) throw new Error('Database unavailable. Check Supabase settings and run supabase/setup.sql.');
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw Object.assign(new Error('Database unavailable. Check Supabase settings and run supabase/setup.sql.'), { status: response.status, code: typeof body?.code === 'string' ? body.code : undefined });
+  }
   return response.status === 204 ? null : response.json();
 }
 type Row = Omit<Note, 'updatedAt'> & { updated_at: string };

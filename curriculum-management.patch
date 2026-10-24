@@ -1,0 +1,1559 @@
+diff --git a/README.md b/README.md
+index d608267..38c715c 100644
+--- a/README.md
++++ b/README.md
+@@ -34,6 +34,7 @@ The default scripts bind to the local machine. To expose a hosted instance, conf
+ - Publish-success notification with **Back to notes** and **New note** actions.
+ - Subject PDF libraries with admin upload/delete and reader downloads (4 MB per PDF). Run `supabase/resources.sql` for cloud storage; see [UPDATE-RESOURCES.md](UPDATE-RESOURCES.md) for an existing deployment.
+ 
++- **Courses, semesters and subjects are managed in the app** (Manage → Courses & subjects): add a course such as IS, add semesters, add subjects. Readers pick their semester in the sidebar. Run `supabase/curriculum.sql` once; see [UPDATE-CURRICULUM.md](UPDATE-CURRICULUM.md).
+ - **Installable offline app (PWA):** install from Chrome on Android, read notes offline, get asked before notes update, and save PDFs/files for offline use on request. See [UPDATE-PWA.md](UPDATE-PWA.md).
+ - Per-subject **Storage** page with nested folders and file uploads (PDF, images, Office files, ZIP); admins manage, readers browse and download. Run `supabase/storage.sql`; see [UPDATE-STORAGE.md](UPDATE-STORAGE.md).
+ - Overview with five subject cards, lesson counts and reading progress.
+diff --git a/UPDATE-CURRICULUM.md b/UPDATE-CURRICULUM.md
+new file mode 100644
+index 0000000..3dab180
+--- /dev/null
++++ b/UPDATE-CURRICULUM.md
+@@ -0,0 +1,33 @@
++# Courses, semesters and subjects (managed in the app)
++
++Subjects are no longer fixed in the code. The administrator adds courses (for example **CS** and **IS**), semesters and subjects from **Manage → Courses & subjects**, and readers pick their semester in the sidebar.
++
++## Apply the update
++1. Open **Supabase → SQL Editor → New query**, paste the full contents of `supabase/curriculum.sql`, and run it. "Success. No rows returned" is normal. It is safe to run more than once and never overwrites a curriculum you have saved.
++2. Deploy the code (commit and push).
++3. Sign in at **Manage notes**, then open **Courses & subjects**.
++
++Your five current subjects (FOA, OS, IWT, DBMS, OOP) become **Computer Science → Year 1 · Semester 2**. All existing notes, PDFs and files stay linked to them. Until you run the SQL the app keeps working with those five subjects, but new subjects cannot be saved.
++
++## Using it
++- **Add course:** a name and a short code (for example `IS`). The code is suggested from the name.
++- **Add semester:** name it yourself, for example `Year 2 · Semester 1`. New semesters get the next sensible name.
++- **Add subject:** a code, a name, an optional one-line description, an icon and a colour.
++- **Subject codes must be unique across all courses.** If CS already has `DBMS`, call the IS one `IS-DBMS`. Each subject has its own notes, files and PDFs.
++- Use the arrows to reorder. Everything is edited as a draft and nothing changes for readers until you press **Save changes**. **Discard** throws the draft away.
++- A subject's **code cannot be changed** once created, because notes and files are linked to it. You can change its name, description, icon and colour at any time.
++
++## Safety rules
++- **A subject that still has notes, files/folders or PDFs cannot be deleted.** The editor shows how much each subject holds and disables Delete with the reason. Move the notes to another subject (edit the note) or delete the content first. Deleting a semester or course follows the same rule for everything inside it.
++- If you edit in two browser tabs, the second save is refused with "This was changed somewhere else" and a **Load latest** button, so one edit cannot silently overwrite another.
++- Limits: 10 courses, 12 semesters per course, 20 subjects per semester, 150 subjects in total.
++
++## For readers and the installed app
++- With more than one semester, a picker at the top of the subject list switches between them (grouped by course). Opening a subject jumps to its own semester. The choice is remembered on that device.
++- The overview and "latest notes" show the chosen semester.
++- The installed/offline app takes the structure live when online and keeps the last copy for offline use. New subjects appear without needing "Update now"; notes inside them still follow the "ask before updating" rule.
++
++## Developer notes
++- The structure is one record in the `curriculum` table (Supabase) or SQLite (local): Course → Semester → Subject. `lib/curriculum-model.ts` holds the rules, `lib/curriculum.ts` the storage and safety checks, `/api/curriculum` the API.
++- Notes, Storage and PDF routes check that a subject exists in the curriculum. The database only checks the code's format (`^[A-Z0-9][A-Z0-9_-]{1,11}$`).
++- A test checks that the seed in `supabase/curriculum.sql` matches `DEFAULT_COURSES` in code.
+diff --git a/app/api/curriculum/route.ts b/app/api/curriculum/route.ts
+new file mode 100644
+index 0000000..5eed913
+--- /dev/null
++++ b/app/api/curriculum/route.ts
+@@ -0,0 +1,36 @@
++import { isAdmin, sameOrigin } from '@/lib/auth';
++import { getCurriculum, saveCurriculum, subjectUsage } from '@/lib/curriculum';
++import { InputError } from '@/lib/errors';
++export const runtime = 'nodejs';
++export const dynamic = 'force-dynamic';
++export const maxDuration = 30;
++
++const noStore = { 'Cache-Control': 'no-store' };
++function failure(e: unknown) {
++  if (e instanceof InputError) return Response.json({ error: e.message }, { status: e.code === 'CONFLICT' ? 409 : e.code === 'SETUP' ? 503 : 400 });
++  return Response.json({ error: 'Courses & subjects are unavailable. Check the database settings.' }, { status: 503 });
++}
++
++// GET            -> the structure everyone sees: { version, courses: [{ id, name, semesters: [{ id, name, subjects }] }] }
++// GET ?usage=1   -> (administrator) how many notes and files each subject holds
++export async function GET(req: Request) {
++  try {
++    if (new URL(req.url).searchParams.has('usage')) {
++      if (!await isAdmin()) return Response.json({ error: 'Administrator login required.' }, { status: 401 });
++      return Response.json(await subjectUsage(), { headers: noStore });
++    }
++    return Response.json(await getCurriculum(), { headers: noStore });
++  } catch (e) { return failure(e); }
++}
++
++// PUT { version, courses } -> replaces the whole structure (the administrator edits it as one document)
++export async function PUT(req: Request) {
++  if (!sameOrigin(req) || !await isAdmin()) return Response.json({ error: 'Administrator login required.' }, { status: 401 });
++  try {
++    const raw = await req.text();
++    if (raw.length > 100000) throw new InputError('Request too large.');
++    let body: unknown;
++    try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
++    return Response.json(await saveCurriculum(body), { headers: noStore });
++  } catch (e) { return failure(e); }
++}
+diff --git a/app/api/notes/route.ts b/app/api/notes/route.ts
+index dc1e01a..e17244a 100644
+--- a/app/api/notes/route.ts
++++ b/app/api/notes/route.ts
+@@ -1,6 +1,7 @@
+ import { isAdmin, sameOrigin } from '@/lib/auth';
+ import { repository } from '@/lib/repository';
+ import { validateNote } from '@/lib/model';
++import { subjectIds } from '@/lib/curriculum';
+ export const runtime = 'nodejs';
+ export const dynamic = 'force-dynamic';
+ const unavailable = () => Response.json({ error: 'Notes are unavailable. Check the database settings and setup.sql in the deployment guide.' }, { status: 503 });
+@@ -10,11 +11,12 @@ export async function GET() {
+ }
+ export async function POST(req: Request) {
+   if (!sameOrigin(req) || !await isAdmin()) return Response.json({ error: 'Administrator login required.' }, { status: 401 });
+-  let input, note;
++  let input, note, valid: string[];
++  try { valid = await subjectIds(); } catch { return unavailable(); }
+   try {
+     const raw = await req.text();
+     if (raw.length > 120000) throw Error('Note too large.');
+-    input = JSON.parse(raw); note = validateNote(input);
++    input = JSON.parse(raw); note = validateNote(input, valid);
+     if (input.id !== undefined && (typeof input.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(input.id))) throw Error('Invalid note ID.');
+   } catch (e) { return Response.json({ error: e instanceof Error ? e.message : 'Invalid note' }, { status: 400 }); }
+   try {
+diff --git a/app/api/resources/route.ts b/app/api/resources/route.ts
+index 36cb2f0..05117f5 100644
+--- a/app/api/resources/route.ts
++++ b/app/api/resources/route.ts
+@@ -1,13 +1,18 @@
+ import { isAdmin, sameOrigin } from '@/lib/auth';
+ import { listResources, uploadResource, downloadResource, deleteResource } from '@/lib/resources';
++import { requireSubject } from '@/lib/curriculum';
++import { InputError } from '@/lib/errors';
+ import { MAX_PDF_BYTES, validSubject, validResourceKey, validatePdf } from '@/lib/resources-model';
+ export const runtime='nodejs';
+ export const dynamic='force-dynamic';
+ export const maxDuration=60;
+ const fail=()=>Response.json({error:'Resources unavailable. Check Supabase Storage and run supabase/resources.sql.'},{status:503});
++// The subject must exist in the curriculum (the format check alone only keeps the id safe).
++async function gate(subject:string){try{await requireSubject(subject);return null;}catch(e){return e instanceof InputError?Response.json({error:e.message},{status:400}):fail();}}
+ export async function GET(req:Request) {
+   const params=new URL(req.url).searchParams,subject=params.get('subject')||'',key=params.get('key');
+   if(!validSubject(subject)||(key!==null&&!validResourceKey(key)))return Response.json({error:'Invalid resource.'},{status:400});
++  {const bad=await gate(subject);if(bad)return bad;}
+   try {
+     if(key){const data=await downloadResource(subject,key);return new Response(new Blob([Buffer.from(data)],{type:'application/pdf'}),{headers:{'Content-Type':'application/pdf','Content-Disposition':`attachment; filename="${key.slice(38)}"`,'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'}});}
+     return Response.json(await listResources(subject),{headers:{'Cache-Control':'no-store'}});
+@@ -18,11 +23,13 @@ export async function POST(req:Request) {
+   if(Number(req.headers.get('content-length'))>MAX_PDF_BYTES+65536)return Response.json({error:'PDFs must be 4 MB or smaller.'},{status:413});
+   let subject:string,file:File,bytes:Uint8Array;
+   try {const form=await req.formData();subject=String(form.get('subject')||'');const value=form.get('file');if(!validSubject(subject)||!(value instanceof File))throw Error('Choose a subject and PDF file.');file=value;if(file.size>MAX_PDF_BYTES)throw Error('PDFs must be 4 MB or smaller.');bytes=new Uint8Array(await file.arrayBuffer());validatePdf(file.name,bytes);}catch(e){return Response.json({error:e instanceof Error?e.message:'Invalid upload.'},{status:400});}
++  {const bad=await gate(subject);if(bad)return bad;}
+   try{return Response.json(await uploadResource(subject,file.name,bytes),{status:201});}catch{return fail();}
+ }
+ export async function DELETE(req:Request) {
+   if(!sameOrigin(req)||!await isAdmin())return Response.json({error:'Administrator login required.'},{status:401});
+   const params=new URL(req.url).searchParams,subject=params.get('subject')||'',key=params.get('key')||'';
+   if(!validSubject(subject)||!validResourceKey(key))return Response.json({error:'Invalid resource.'},{status:400});
++  {const bad=await gate(subject);if(bad)return bad;}
+   try{await deleteResource(subject,key);return Response.json({ok:true});}catch{return fail();}
+ }
+diff --git a/app/api/storage/route.ts b/app/api/storage/route.ts
+index e1829ae..5ad7703 100644
+--- a/app/api/storage/route.ts
++++ b/app/api/storage/route.ts
+@@ -1,5 +1,6 @@
+ import { isAdmin, sameOrigin } from '@/lib/auth';
+ import { createFolder, deleteItem, listItems, readFileItem, renameItem, uploadFile } from '@/lib/storage';
++import { requireSubject } from '@/lib/curriculum';
+ import { InputError, MAX_FILE_BYTES, extensionOf, fileTypes, isUuid, validStorageSubject } from '@/lib/storage-model';
+ export const runtime = 'nodejs';
+ export const dynamic = 'force-dynamic';
+@@ -11,7 +12,8 @@ function failure(e: unknown) {
+   if (e instanceof InputError) return Response.json({ error: e.message }, { status: e.code === 'ENOENT' ? 404 : 400 });
+   return Response.json({ error: 'Storage unavailable. Check Supabase Storage and run supabase/storage.sql.' }, { status: 503 });
+ }
+-const subjectOf = (v: unknown) => { const s = String(v || ''); if (!validStorageSubject(s)) throw new InputError('Invalid subject.'); return s; };
++// Format check first (safe in URLs and paths), then the subject must exist in the curriculum.
++const subjectOf = async (v: unknown) => { const s = String(v || ''); if (!validStorageSubject(s)) throw new InputError('Invalid subject.'); return requireSubject(s); };
+ const parentOf = (v: unknown) => { if (v === null || v === undefined || v === '') return null; if (!isUuid(v)) throw new InputError('Invalid folder.'); return v; };
+ 
+ // GET ?subject=FOA            -> every folder/file in the subject (the client builds the tree)
+@@ -19,7 +21,7 @@ const parentOf = (v: unknown) => { if (v === null || v === undefined || v === ''
+ export async function GET(req: Request) {
+   const params = new URL(req.url).searchParams;
+   try {
+-    const subject = subjectOf(params.get('subject')), id = params.get('id');
++    const subject = await subjectOf(params.get('subject')), id = params.get('id');
+     if (id === null) return Response.json(await listItems(subject), { headers: noStore });
+     const { item, bytes, mime } = await readFileItem(subject, id);
+     const inline = params.get('view') === '1' && !!fileTypes[extensionOf(item.name)]?.inline;
+@@ -42,14 +44,14 @@ export async function POST(req: Request) {
+       const form = await req.formData(), file = form.get('file');
+       if (!(file instanceof File)) throw new InputError('Choose a file to upload.');
+       if (file.size > MAX_FILE_BYTES) throw new InputError('Files must be 4 MB or smaller.');
+-      return Response.json(await uploadFile(subjectOf(form.get('subject')), parentOf(form.get('parentId')), file.name, new Uint8Array(await file.arrayBuffer())), { status: 201 });
++      return Response.json(await uploadFile(await subjectOf(form.get('subject')), parentOf(form.get('parentId')), file.name, new Uint8Array(await file.arrayBuffer())), { status: 201 });
+     }
+     const raw = await req.text();
+     if (raw.length > 4096) throw new InputError('Request too large.');
+     let body: Record<string, unknown>;
+     try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
+     if (body.action !== 'folder') throw new InputError('Invalid request.');
+-    return Response.json(await createFolder(subjectOf(body.subject), parentOf(body.parentId), body.name), { status: 201 });
++    return Response.json(await createFolder(await subjectOf(body.subject), parentOf(body.parentId), body.name), { status: 201 });
+   } catch (e) { return failure(e); }
+ }
+ 
+@@ -61,7 +63,7 @@ export async function PATCH(req: Request) {
+     if (raw.length > 4096) throw new InputError('Request too large.');
+     let body: Record<string, unknown>;
+     try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
+-    await renameItem(subjectOf(body.subject), String(body.id || ''), body.name);
++    await renameItem(await subjectOf(body.subject), String(body.id || ''), body.name);
+     return Response.json({ ok: true });
+   } catch (e) { return failure(e); }
+ }
+@@ -70,6 +72,6 @@ export async function PATCH(req: Request) {
+ export async function DELETE(req: Request) {
+   if (!sameOrigin(req) || !await isAdmin()) return denied();
+   const params = new URL(req.url).searchParams;
+-  try { await deleteItem(subjectOf(params.get('subject')), params.get('id') || ''); return Response.json({ ok: true }); }
++  try { await deleteItem(await subjectOf(params.get('subject')), params.get('id') || ''); return Response.json({ ok: true }); }
+   catch (e) { return failure(e); }
+ }
+diff --git a/app/globals.css b/app/globals.css
+index 7f8a5fd..470d684 100644
+--- a/app/globals.css
++++ b/app/globals.css
+@@ -64,3 +64,33 @@
+ .spin{animation:rz-spin 1s linear infinite}@keyframes rz-spin{to{transform:rotate(360deg)}}
+ @media(prefers-reduced-motion:reduce){.spin{animation:none}}
+ .offline-note{font-size:12px;white-space:nowrap}
++
++/* Courses, semesters and subjects */
++.term-picker{width:calc(100% - 24px);margin:2px 12px 10px;padding:9px 10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
++.term-picker:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
++.term-label{margin:2px 14px 10px;font-size:12px;color:var(--muted)}
++.nav-empty{margin:4px 14px;font-size:12px;color:var(--muted)}.nav-empty a{color:var(--accent)}
++.cur-course{margin:0 0 22px;padding:16px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px}
++.cur-row{display:flex;align-items:center;gap:6px}
++.cur-row input,.cur-form input{flex:1;min-width:0;padding:9px 12px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font:inherit;font-size:14px}
++.cur-course-head input{font-size:17px;font-weight:700}
++.cur-code{padding:3px 9px;background:var(--accent-soft);color:var(--accent);border-radius:99px;font-size:12px;font-weight:700;margin:0 6px}
++.cur-semester{margin:14px 0 0;padding:14px;background:var(--sidebar);border:1px solid var(--border);border-radius:10px}
++.cur-semester>.cur-row input{font-weight:600}
++.cur-subjects{list-style:none;margin:12px 0 10px;padding:0;display:flex;flex-direction:column;gap:6px}
++.cur-subjects li{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
++.cur-subjects li>div{flex:1;min-width:0}.cur-subjects strong{display:block;font-size:14px;overflow-wrap:anywhere}.cur-subjects li>div>span{font-size:12px;color:var(--muted)}
++.cur-subjects li.cur-none{color:var(--muted);font-size:13px;border-style:dashed;justify-content:center}
++.cur-swatch{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#fff;flex-shrink:0}
++.cur-add{margin-top:6px}
++.cur-form{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px;padding:14px;background:var(--surface);border:1px solid var(--accent);border-radius:10px}
++.cur-form label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;color:var(--muted)}
++.cur-form-row{display:flex;gap:10px;flex-wrap:wrap}.cur-form-row label{min-width:110px}.cur-form-row .grow{flex:1;min-width:200px}
++.cur-pick{display:flex;flex-wrap:wrap;gap:6px;border:0;margin:0;padding:0}.cur-pick legend{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;padding:0}
++.cur-pick button{width:38px;height:38px;display:grid;place-items:center;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer}
++.cur-pick button.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);color:var(--accent)}
++.cur-pick .swatch{width:30px;height:30px;border:2px solid transparent;border-radius:99px}.cur-pick .swatch.on{border-color:var(--text);box-shadow:0 0 0 2px var(--surface) inset}
++.cur-form-actions{display:flex;justify-content:flex-end;gap:10px}.cur-form-actions .primary{margin:0;width:auto;padding:10px 18px}
++.cur-error{margin:0;color:#d64545;font-size:13px}
++.cur-dirty{margin:0 0 14px;padding:10px 14px;background:var(--accent-soft);color:var(--text);border-radius:8px;font-size:13px}
++@media(max-width:600px){.cur-row{flex-wrap:wrap}.cur-subjects li{flex-wrap:wrap}.cur-subjects li>div{flex-basis:calc(100% - 50px)}}
+diff --git a/app/layout.tsx b/app/layout.tsx
+index 5e91490..c8d5b0a 100644
+--- a/app/layout.tsx
++++ b/app/layout.tsx
+@@ -7,7 +7,7 @@ import 'highlight.js/styles/github-dark.css';
+ 
+ export const metadata: Metadata = {
+   title: 'RenxZero — Study workspace',
+-  description: 'A personal university knowledge base for FOA, OS, IWT, DBMS and OOP.',
++  description: 'A personal university knowledge base, organised by course, semester and subject.',
+   icons: { icon: '/favicon.svg', apple: '/icons/apple-touch-icon.png' },
+   appleWebApp: { capable: true, title: 'UNINotes', statusBarStyle: 'default' },
+ };
+diff --git a/app/manifest.ts b/app/manifest.ts
+index f1a6333..4390fd7 100644
+--- a/app/manifest.ts
++++ b/app/manifest.ts
+@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
+     id: '/',
+     name: 'UNINotes',
+     short_name: 'UNINotes',
+-    description: 'Study notes for FOA, OS, IWT, DBMS and OOP that work offline.',
++    description: 'Your study notes, organised by course, semester and subject, that work offline.',
+     start_url: '/',
+     scope: '/',
+     display: 'standalone',
+diff --git a/components/curriculum-editor.tsx b/components/curriculum-editor.tsx
+new file mode 100644
+index 0000000..6041997
+--- /dev/null
++++ b/components/curriculum-editor.tsx
+@@ -0,0 +1,126 @@
++'use client';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import Link from 'next/link';
++import { ArrowLeft, ChevronDown, ChevronUp, Pencil, Plus, Save, Settings2, Trash2, Undo2, X } from 'lucide-react';
++import { ICON_NAMES, PALETTE, addCourse, addSemester, addSubject, allSubjects, moveCourse, moveSemester, moveSubject, removeCourse, removeSemester, removeSubject, renameCourse, renameSemester, subjectsInCourse, subjectsInSemester, suggestCode, suggestSemesterName, updateSubject, validateCurriculum, type Course, type Curriculum, type Semester, type SubjectDef } from '@/lib/curriculum-model';
++import { iconFor } from './subject-icons';
++
++type Usage = Record<string, { notes: number; files: number }>;
++type Form = { mode: 'course' } | { mode: 'subject'; semesterId: string; editId?: string } | null;
++const blankSubject = { id: '', name: '', description: '', icon: 'BookOpen', color: PALETTE[0] as string };
++
++const usageText = (u?: { notes: number; files: number }) => u && (u.notes || u.files) ? [u.notes && `${u.notes} ${u.notes === 1 ? 'note' : 'notes'}`, u.files && `${u.files} ${u.files === 1 ? 'file/folder' : 'files/folders'}`].filter(Boolean).join(' · ') : '';
++const message = (e: unknown) => e instanceof Error ? e.message : 'Something went wrong.';
++
++export default function CurriculumEditor({ curriculum, admin, onSaved }: { curriculum: Curriculum; admin: boolean; onSaved: (c: Curriculum) => void }) {
++  const [draft, setDraft] = useState<Curriculum>(curriculum), [usage, setUsage] = useState<Usage | null>(null);
++  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [conflict, setConflict] = useState(false);
++  const [form, setForm] = useState<Form>(null), [fields, setFields] = useState(blankSubject), [codeTouched, setCodeTouched] = useState(false), [formError, setFormError] = useState('');
++  const [courseName, setCourseName] = useState(''), [courseCode, setCourseCode] = useState('');
++
++  const dirty = useMemo(() => JSON.stringify(draft.courses) !== JSON.stringify(curriculum.courses), [draft, curriculum]);
++  useEffect(() => { setDraft(curriculum); }, [curriculum]); // after a save or reload
++  const loadUsage = useCallback(async () => { if (!admin) return; try { const r = await fetch('/api/curriculum?usage=1', { cache: 'no-store' }); if (r.ok) setUsage(await r.json()); } catch { /* hints only */ } }, [admin]);
++  useEffect(() => { void loadUsage(); }, [loadUsage, curriculum.version]);
++  useEffect(() => { if (!dirty) return; const warn = (e: BeforeUnloadEvent) => e.preventDefault(); window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [dirty]);
++
++  const apply = (fn: () => Curriculum) => { try { setDraft(fn()); setError(''); setNotice(''); } catch (e) { setError(message(e)); } };
++  const takenSubjectIds = allSubjects(draft).map(s => s.id);
++  const locked = (ids: string[]) => ids.some(id => usage?.[id] && (usage[id].notes || usage[id].files));
++  const lockedReason = (ids: string[]) => { const used = ids.filter(id => usage?.[id] && (usage[id].notes || usage[id].files)); return used.length ? `${used.join(', ')} still ${used.length === 1 ? 'has' : 'have'} content. Delete or move it first.` : ''; };
++
++  const save = async () => {
++    setBusy(true); setError(''); setNotice(''); setConflict(false);
++    try {
++      validateCurriculum(draft.courses);
++      const response = await fetch('/api/curriculum', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: curriculum.version, courses: draft.courses }) });
++      const data = await response.json().catch(() => ({}));
++      if (!response.ok) { if (response.status === 409) setConflict(true); throw Error(data.error || 'Could not save.'); }
++      onSaved(data); setNotice('Saved. Everyone now sees the new structure.');
++    } catch (e) { setError(message(e)); } finally { setBusy(false); }
++  };
++  const reloadLatest = async () => { try { const r = await fetch('/api/curriculum', { cache: 'no-store' }), data = await r.json(); if (!r.ok) throw Error(data.error); onSaved(data); setConflict(false); setError(''); setNotice('Loaded the latest version.'); } catch (e) { setError(message(e)); } };
++
++  const openSubjectForm = (semesterId: string, edit?: SubjectDef) => { setForm({ mode: 'subject', semesterId, editId: edit?.id }); setFields(edit ? { id: edit.id, name: edit.name, description: edit.description, icon: edit.icon, color: edit.color } : blankSubject); setCodeTouched(!!edit); setFormError(''); };
++  const submitSubject = () => {
++    if (form?.mode !== 'subject') return;
++    try {
++      const next = form.editId ? updateSubject(draft, form.editId, { name: fields.name, description: fields.description, icon: fields.icon, color: fields.color }) : addSubject(draft, form.semesterId, { ...fields });
++      validateCurriculum(next.courses); // check first, so an invalid edit is never applied
++      setDraft(next); setForm(null); setFormError(''); setNotice('');
++    } catch (e) { setFormError(message(e)); }
++  };
++  const submitCourse = () => { try { setDraft(addCourse(draft, courseCode, courseName.trim())); setForm(null); setCourseName(''); setCourseCode(''); setFormError(''); } catch (e) { setFormError(message(e)); } };
++
++  const move = (arrow: 'up' | 'down') => (arrow === 'up' ? -1 : 1) as -1 | 1;
++  const Arrows = ({ onMove, label }: { onMove: (d: -1 | 1) => void; label: string }) => <>
++    <button className="icon-button" aria-label={'Move ' + label + ' up'} onClick={() => onMove(move('up'))}><ChevronUp size={16} /></button>
++    <button className="icon-button" aria-label={'Move ' + label + ' down'} onClick={() => onMove(move('down'))}><ChevronDown size={16} /></button>
++  </>;
++
++  const subjectForm = form?.mode === 'subject' ? <form className="cur-form" onSubmit={e => { e.preventDefault(); submitSubject(); }}>
++    <div className="cur-form-row">
++      {!form.editId && <label>Code<input value={fields.id} maxLength={12} placeholder="e.g. DBMS" onChange={e => { setCodeTouched(true); setFields({ ...fields, id: e.target.value.toUpperCase() }); }} /></label>}
++      <label className="grow">Subject name<input autoFocus value={fields.name} maxLength={80} placeholder="e.g. Database Management Systems" onChange={e => setFields({ ...fields, name: e.target.value, ...(!form.editId && !codeTouched ? { id: suggestCode(e.target.value, takenSubjectIds, 12) } : {}) })} /></label>
++    </div>
++    <label>Short description (optional)<input value={fields.description} maxLength={100} onChange={e => setFields({ ...fields, description: e.target.value })} /></label>
++    <fieldset className="cur-pick"><legend>Icon</legend>{ICON_NAMES.map(n => { const I = iconFor(n); return <button type="button" key={n} aria-label={n} aria-pressed={fields.icon === n} className={fields.icon === n ? 'on' : ''} onClick={() => setFields({ ...fields, icon: n })}><I size={18} /></button>; })}</fieldset>
++    <fieldset className="cur-pick"><legend>Colour</legend>{PALETTE.map(c => <button type="button" key={c} aria-label={'Colour ' + c} aria-pressed={fields.color === c} className={'swatch ' + (fields.color === c ? 'on' : '')} style={{ background: c }} onClick={() => setFields({ ...fields, color: c })} />)}</fieldset>
++    {formError && <p className="cur-error" role="alert">{formError}</p>}
++    <div className="cur-form-actions"><button type="button" className="secondary" onClick={() => setForm(null)}>Cancel</button><button className="primary" disabled={!fields.name.trim() || (!form.editId && !fields.id.trim())}>{form.editId ? 'Update subject' : 'Add subject'}</button></div>
++  </form> : null;
++
++  const courseForm = form?.mode === 'course' ? <form className="cur-form" onSubmit={e => { e.preventDefault(); submitCourse(); }}>
++    <div className="cur-form-row">
++      <label className="grow">Course name<input autoFocus value={courseName} maxLength={60} placeholder="e.g. Information Systems" onChange={e => { setCourseName(e.target.value); if (!codeTouched) setCourseCode(suggestCode(e.target.value, draft.courses.map(c => c.id), 8)); }} /></label>
++      <label>Code<input value={courseCode} maxLength={8} placeholder="e.g. IS" onChange={e => { setCodeTouched(true); setCourseCode(e.target.value.toUpperCase()); }} /></label>
++    </div>
++    {formError && <p className="cur-error" role="alert">{formError}</p>}
++    <div className="cur-form-actions"><button type="button" className="secondary" onClick={() => setForm(null)}>Cancel</button><button className="primary" disabled={!courseName.trim() || !courseCode.trim()}>Add course</button></div>
++  </form> : null;
++
++  const semesterBlock = (course: Course, sem: Semester) => <div className="cur-semester" key={sem.id}>
++    <div className="cur-row">
++      <input aria-label={'Semester name in ' + course.name} value={sem.name} maxLength={60} onChange={e => apply(() => renameSemester(draft, sem.id, e.target.value))} />
++      <Arrows label={sem.name} onMove={d => apply(() => moveSemester(draft, course.id, sem.id, d))} />
++      <button className="icon-button" aria-label={'Delete semester ' + sem.name} disabled={locked(subjectsInSemester(sem))} title={lockedReason(subjectsInSemester(sem)) || 'Delete this semester'}
++        onClick={() => { if (!sem.subjects.length || window.confirm(`Remove “${sem.name}” and its ${sem.subjects.length} subject${sem.subjects.length === 1 ? '' : 's'}?`)) apply(() => removeSemester(draft, sem.id)); }}><Trash2 size={16} /></button>
++    </div>
++    <ul className="cur-subjects">
++      {sem.subjects.map(s => { const I = iconFor(s.icon), hint = usageText(usage?.[s.id]); return <li key={s.id}>
++        <span className="cur-swatch" style={{ background: s.color }}><I size={17} /></span>
++        <div><strong>{s.name}</strong><span>{s.id}{hint ? ' · ' + hint : usage ? ' · empty' : ''}</span></div>
++        <button className="icon-button" aria-label={'Edit ' + s.name} onClick={() => openSubjectForm(sem.id, s)}><Pencil size={16} /></button>
++        <Arrows label={s.name} onMove={d => apply(() => moveSubject(draft, sem.id, s.id, d))} />
++        <button className="icon-button" aria-label={'Delete subject ' + s.name} disabled={locked([s.id])} title={lockedReason([s.id]) || 'Delete this subject'} onClick={() => apply(() => removeSubject(draft, s.id))}><Trash2 size={16} /></button>
++      </li>; })}
++      {!sem.subjects.length && <li className="cur-none">No subjects yet.</li>}
++    </ul>
++    {form?.mode === 'subject' && form.semesterId === sem.id ? subjectForm : <button className="secondary cur-add" onClick={() => openSubjectForm(sem.id)}><Plus size={16} />Add subject</button>}
++  </div>;
++
++  return <>
++    <Link href="/admin" className="text-button"><ArrowLeft size={16} />Back to Manage notes</Link>
++    <div className="eyebrow">AUTHOR WORKSPACE</div>
++    <div className="page-heading"><div><h1>Courses &amp; subjects<span className="heading-dot">.</span></h1><p className="muted">Add courses, semesters and subjects. Changes reach everyone after you save.</p></div>
++      {admin && <div className="actions"><button className="secondary" disabled={!dirty || busy} onClick={() => { setDraft(curriculum); setError(''); setNotice(''); setForm(null); }}><Undo2 size={16} />Discard</button><button className="primary" disabled={!dirty || busy} onClick={() => void save()}><Save size={16} />{busy ? 'Saving…' : 'Save changes'}</button></div>}
++    </div>
++    {!admin ? <div className="login-card"><span className="large-icon"><Settings2 /></span><h2>Administrator access</h2><p className="muted">Sign in to manage courses, semesters and subjects.</p><Link className="primary" href="/admin">Sign in</Link></div> : <>
++      {error && <div className="banner error" role="alert"><span>{error}</span>{conflict && <button className="text-button" onClick={() => void reloadLatest()}>Load latest</button>}<button aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
++      {notice && <div className="banner success" role="status"><span>{notice}</span></div>}
++      {dirty && <p className="cur-dirty" role="status">You have unsaved changes. Nothing changes for readers until you press Save.</p>}
++      {!draft.courses.length && <div className="empty"><h3>No courses yet</h3><p>Start by adding a course such as Computer Science or Information Systems.</p></div>}
++      {draft.courses.map(course => <section className="cur-course" key={course.id} aria-label={course.name}>
++        <div className="cur-row cur-course-head">
++          <input aria-label="Course name" value={course.name} maxLength={60} onChange={e => apply(() => renameCourse(draft, course.id, e.target.value))} /><span className="cur-code">{course.id}</span>
++          <Arrows label={course.name} onMove={d => apply(() => moveCourse(draft, course.id, d))} />
++          <button className="icon-button" aria-label={'Delete course ' + course.name} disabled={locked(subjectsInCourse(course))} title={lockedReason(subjectsInCourse(course)) || 'Delete this course'}
++            onClick={() => { const n = subjectsInCourse(course).length; if ((!course.semesters.length && !n) || window.confirm(`Remove “${course.name}”, its ${course.semesters.length} semester${course.semesters.length === 1 ? '' : 's'} and ${n} subject${n === 1 ? '' : 's'}?`)) apply(() => removeCourse(draft, course.id)); }}><Trash2 size={16} /></button>
++        </div>
++        {course.semesters.map(sem => semesterBlock(course, sem))}
++        <button className="secondary cur-add" onClick={() => apply(() => addSemester(draft, course.id, suggestSemesterName(course)))}><Plus size={16} />Add semester</button>
++      </section>)}
++      {form?.mode === 'course' ? courseForm : <button className="secondary cur-add" onClick={() => { setForm({ mode: 'course' }); setCourseName(''); setCourseCode(''); setCodeTouched(false); setFormError(''); }}><Plus size={16} />Add course</button>}
++    </>}
++  </>;
++}
+diff --git a/components/subject-icons.ts b/components/subject-icons.ts
+new file mode 100644
+index 0000000..af4b41c
+--- /dev/null
++++ b/components/subject-icons.ts
+@@ -0,0 +1,5 @@
++import { Atom, BarChart3, BookOpen, Bot, Boxes, Braces, Brain, Briefcase, Calculator, Cloud, Code, Cpu, Database, FlaskConical, Globe, Languages, Layers, Lightbulb, Network, Palette, Server, ShieldCheck, Smartphone, Terminal, Users, Workflow } from 'lucide-react';
++
++// Every name in ICON_NAMES must appear here (a test checks it). Unknown names fall back to a book.
++export const subjectIcons = { Braces, Cpu, Globe, Database, Boxes, BookOpen, Calculator, Network, ShieldCheck, Code, Server, BarChart3, Briefcase, Layers, FlaskConical, Palette, Terminal, Workflow, Lightbulb, Languages, Atom, Smartphone, Cloud, Bot, Brain, Users } as const;
++export const iconFor = (name: string) => (subjectIcons as Record<string, typeof BookOpen>)[name] || BookOpen;
+diff --git a/components/workspace.tsx b/components/workspace.tsx
+index 8e810ae..58f2018 100644
+--- a/components/workspace.tsx
++++ b/components/workspace.tsx
+@@ -1,9 +1,12 @@
+ 'use client';
+-import { useEffect,useRef,useState } from 'react';
++import { useEffect,useMemo,useRef,useState } from 'react';
+ import Link from 'next/link';
+ import { usePathname,useRouter } from 'next/navigation';
+-import { ArrowLeft,ArrowRight,BookOpen,Boxes,Braces,Check,ChevronRight,Clock,Cpu,Database,FileText,FolderOpen,Globe,GraduationCap,LayoutDashboard,LogOut,Menu,Moon,Plus,Search,Settings2,Sparkles,Sun,Trash2,X } from 'lucide-react';
+-import { subjects,type Note } from '@/lib/model';
++import { ArrowLeft,ArrowRight,BookOpen,Boxes,Braces,Check,ChevronRight,Clock,Cpu,Database,FileText,FolderOpen,Library,Globe,GraduationCap,LayoutDashboard,LogOut,Menu,Moon,Plus,Search,Settings2,Sparkles,Sun,Trash2,X } from 'lucide-react';
++import type { Note } from '@/lib/model';
++import { allSemesters,allSubjects,defaultCurriculum,pickSemesterId,subjectIdsOf,type Curriculum } from '@/lib/curriculum-model';
++import { iconFor } from './subject-icons';
++import CurriculumEditor from './curriculum-editor';
+ import NoteMarkdown,{headingId} from './markdown';
+ import Resources from './resources';
+ import Storage from './storage';
+@@ -12,52 +15,57 @@ import { applyUpdate,checkPending,isStandalone,loadWorkspaceData,notifyUpdate,wa
+ import { diffSignature } from '@/lib/sync-model';
+ import Comments from './comments';
+ import NoteNav from './note-nav';
+-const icons={Braces,Cpu,Globe,Database,Boxes};
+-const blank=(subject='FOA')=>({subject,title:'',content:'',tags:[] as string[],published:false});
++
++const blank=(subject='')=>({subject,title:'',content:'',tags:[] as string[],published:false});
+ type Draft=ReturnType<typeof blank>&{id?:string};
+ async function request(url:string,options?:RequestInit){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw Error(d.error||'Something went wrong.');return d;}
+ export default function Workspace(){
+- const path=usePathname();const router=useRouter();const parts=path.split('/').filter(Boolean);const adminPage=parts[0]==='admin';const subject=subjects.find(s=>s.id===parts[1]);const noteId=parts[0]==='notes'?parts[1]:undefined;const storagePage=parts[0]==='subjects'&&parts[2]==='storage'&&!!subject&&parts.length<=4;
++ const [curriculum,setCurriculum]=useState<Curriculum>(defaultCurriculum),[semPick,setSemPick]=useState('');const subjects=useMemo(()=>allSubjects(curriculum),[curriculum]);
++ const path=usePathname();const router=useRouter();const parts=path.split('/').filter(Boolean);const adminPage=parts[0]==='admin',curriculumPage=parts[0]==='admin'&&parts[1]==='curriculum';const subject=subjects.find(s=>s.id===parts[1]);const noteId=parts[0]==='notes'?parts[1]:undefined;const storagePage=parts[0]==='subjects'&&parts[2]==='storage'&&!!subject&&parts.length<=4;
+  const [notes,setNotes]=useState<Note[]>([]),[loaded,setLoaded]=useState(false),[admin,setAdmin]=useState(false),[configured,setConfigured]=useState(true),[password,setPassword]=useState(''),[dark,setDark]=useState(false),[mobile,setMobile]=useState(false),[query,setQuery]=useState(''),[tag,setTag]=useState(''),[completed,setCompleted]=useState<string[]>([]),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[draft,setDraft]=useState<Draft|null>(null),[tags,setTags]=useState(''),[suggestion,setSuggestion]=useState<{content:string;original:string;message:string}|null>(null),[deleteId,setDeleteId]=useState<string|null>(null),[dirty,setDirty]=useState(false);
+  const [publishedNotice,setPublishedNotice]=useState(false);
+  const [offline,setOffline]=useState(false),[pending,setPending]=useState<Pending|null>(null),[syncedAt,setSyncedAt]=useState<string|null>(null),[updating,setUpdating]=useState(false);
+  const adminRef=useRef(false);adminRef.current=admin;const dismissed=useRef('');
+- const reload=async()=>{const d=await loadWorkspaceData();setNotes(d.notes);setAdmin(d.admin);setConfigured(d.configured);setOffline(d.offline);setPending(d.pending);setSyncedAt(d.savedAt);setLoaded(true);return d;};
++ const reload=async()=>{const d=await loadWorkspaceData();setCurriculum(d.curriculum);setNotes(d.notes);setAdmin(d.admin);setConfigured(d.configured);setOffline(d.offline);setPending(d.pending);setSyncedAt(d.savedAt);setLoaded(true);return d;};
+  // Installed app: new notes are never applied silently. The reader is asked first (Update now / Later).
+  const doUpdate=async(p:Pending)=>{setUpdating(true);try{const snapshot=await applyUpdate(p);setNotes(p.remote);setPending(null);setSyncedAt(snapshot.savedAt);setNotice('Notes updated.');if(new URLSearchParams(location.search).has('apply-update'))window.history.replaceState(null,'',location.pathname);}catch(e){setError(e instanceof Error?e.message:'Update failed.');}finally{setUpdating(false);}};
+  const later=()=>{if(pending)dismissed.current=diffSignature(pending.diff);setPending(null);};
+- useEffect(()=>{reload().then(d=>{if(!isStandalone()||d.admin||d.offline)return;void warmNotePages(d.notes);if(!d.pending)return;if(new URLSearchParams(location.search).has('apply-update'))void doUpdate(d.pending);else if(document.hidden)void notifyUpdate(d.pending.diff);}).catch(e=>setError(e.message));try{setDark(localStorage.getItem('renxzero-theme')==='dark');setCompleted(JSON.parse(localStorage.getItem('renxzero-progress')||'[]'));}catch{}},[]);
++ useEffect(()=>{reload().then(d=>{if(!isStandalone()||d.admin||d.offline)return;void warmNotePages(d.notes,subjectIdsOf(d.curriculum));if(!d.pending)return;if(new URLSearchParams(location.search).has('apply-update'))void doUpdate(d.pending);else if(document.hidden)void notifyUpdate(d.pending.diff);}).catch(e=>setError(e.message));try{setDark(localStorage.getItem('renxzero-theme')==='dark');setCompleted(JSON.parse(localStorage.getItem('renxzero-progress')||'[]'));}catch{}},[]);
+  useEffect(()=>{document.documentElement.dataset.theme=dark?'dark':'light';},[dark]);
++ useEffect(()=>{try{setSemPick(localStorage.getItem('rz-semester')||'');}catch{}},[]);
+  useEffect(()=>{if(!loaded||!isStandalone())return;const run=async()=>{if(adminRef.current)return;const r=await checkPending();if(r==='offline'){setOffline(true);return;}setOffline(false);if(!r||diffSignature(r.diff)===dismissed.current)return;setPending(r);if(document.hidden)void notifyUpdate(r.diff);};const online=()=>void run(),visible=()=>{if(!document.hidden)void run();},off=()=>setOffline(true);window.addEventListener('online',online);window.addEventListener('offline',off);document.addEventListener('visibilitychange',visible);return()=>{window.removeEventListener('online',online);window.removeEventListener('offline',off);document.removeEventListener('visibilitychange',visible);};},[loaded]);
+  useEffect(()=>{setMobile(false);setQuery('');setTag('');},[path]);
+  useEffect(()=>{const fn=(e:BeforeUnloadEvent)=>{if(dirty){e.preventDefault();}};window.addEventListener('beforeunload',fn);return()=>window.removeEventListener('beforeunload',fn);},[dirty]);
+  useEffect(()=>{if(!suggestion&&!deleteId&&!publishedNotice)return;const previous=document.activeElement as HTMLElement;const modal=document.querySelector('.modal') as HTMLElement;const selectors='button:not(:disabled),textarea,input,select,a[href]';const elements=()=>Array.from(modal.querySelectorAll<HTMLElement>(selectors));elements()[0]?.focus();const key=(e:KeyboardEvent)=>{if(e.key==='Escape'){setSuggestion(null);setDeleteId(null);setPublishedNotice(false);}if(e.key==='Tab'){const items=elements(),first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}};document.addEventListener('keydown',key);return()=>{document.removeEventListener('keydown',key);previous?.focus();};},[!!suggestion,!!deleteId,publishedNotice]);
+  useEffect(()=>{const doc=document as Document&{modelContext?:{registerTool:(tool:unknown,options:unknown)=>void|Promise<void>}};const controller=new AbortController();try{void Promise.resolve(doc.modelContext?.registerTool({name:'search_notes',description:'Search visible notes by title, content, or tag and display the results.',inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true},execute:(input:{query:string})=>{if(typeof input.query!=='string'||input.query.length>200)throw Error('Invalid query');setQuery(input.query);return notes.filter(n=>(n.title+' '+n.content+' '+n.tags.join(' ')).toLowerCase().includes(input.query.toLowerCase())).map(n=>({id:n.id,title:n.title}));}},{signal:controller.signal})).catch(()=>{});}catch{}return()=>controller.abort();},[notes]);
+- const published=notes.filter(n=>n.published),note=notes.find(n=>n.id===noteId),activeSubject=subject||subjects.find(s=>s.id===note?.subject);const visible=published.filter(n=>(!subject||n.subject===subject.id)&&(!tag||n.tags.includes(tag)));const matches=notes.filter(n=>(n.title+' '+n.content+' '+n.tags.join(' ')).toLowerCase().includes(query.toLowerCase()));
++ const published=notes.filter(n=>n.published),note=notes.find(n=>n.id===noteId),activeSubject=subject||subjects.find(s=>s.id===note?.subject);const semesters=allSemesters(curriculum),chosenSem=pickSemesterId(curriculum,activeSubject?.id,semPick),term=semesters.find(t=>t.semester.id===chosenSem)||null,termSubjects=term?.semester.subjects||[],termIds=new Set(termSubjects.map(s=>s.id));
++ const pickTerm=(id:string)=>{setSemPick(id);try{localStorage.setItem('rz-semester',id);}catch{}if(activeSubject||storagePage||noteId)router.push('/');};
++ const visible=published.filter(n=>(subject?n.subject===subject.id:(!term||termIds.has(n.subject)))&&(!tag||n.tags.includes(tag)));const matches=notes.filter(n=>(n.title+' '+n.content+' '+n.tags.join(' ')).toLowerCase().includes(query.toLowerCase()));
+  const progress=(items:Note[])=>items.length?Math.round(items.filter(n=>completed.includes(n.id)).length/items.length*100):0;
+  const act=async(fn:()=>Promise<void>)=>{setBusy(true);setError('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Something went wrong.');}finally{setBusy(false);}};
+- const edit=(n?:Note,selectedSubject?:string)=>{if(dirty&&!window.confirm('Discard your unsaved changes?'))return;setDraft(n?{...n}:blank(selectedSubject||subject?.id));setTags(n?.tags.join(', ')||'');setSuggestion(null);setDirty(false);setNotice('');setPublishedNotice(false);};
++ const edit=(n?:Note,selectedSubject?:string)=>{if(dirty&&!window.confirm('Discard your unsaved changes?'))return;setDraft(n?{...n}:blank(selectedSubject||subject?.id||termSubjects[0]?.id||subjects[0]?.id));setTags(n?.tags.join(', ')||'');setSuggestion(null);setDirty(false);setNotice('');setPublishedNotice(false);};
+  const closeEditor=()=>{if(!dirty||window.confirm('Discard your unsaved changes?')){setDraft(null);setDirty(false);setSuggestion(null);}};
+ 
+  const save=(publish:boolean)=>act(async()=>{const saved=await request('/api/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...draft,tags:tags.split(',').map(t=>t.trim()).filter(Boolean),published:publish})});setNotes(current=>[saved,...current.filter(n=>n.id!==saved.id)]);setDraft(saved);setDirty(false);setPublishedNotice(publish);setNotice(publish?'Note published. It is now available to readers.':'Draft saved. Only administrators can see it.');});
+  const toggleComplete=()=>{if(!note)return;const next=completed.includes(note.id)?completed.filter(id=>id!==note.id):[...completed,note.id];try{localStorage.setItem('renxzero-progress',JSON.stringify(next));setCompleted(next);}catch{setError('Your browser could not save reading progress.');}};
+- const CardIcon=activeSubject?icons[activeSubject.icon]:BookOpen;
++ const CardIcon=activeSubject?iconFor(activeSubject.icon):BookOpen;
+  return <div className="app-shell"><PwaBar offline={offline} pending={pending} savedAt={syncedAt} updating={updating} onUpdate={()=>pending&&void doUpdate(pending)} onLater={later}/>
+- <aside className={'sidebar '+(mobile?'open':'')}><Link href="/" className="brand"><span className="brand-icon">R<span>z</span></span><span>RenxZero<small>YOUR STUDY SPACE</small></span></Link><button className="mobile-close icon-button" aria-label="Close navigation" onClick={()=>setMobile(false)}><X size={20}/></button><div className="workspace-label">WORKSPACE</div><Link className={'nav-item '+(path==='/'?'selected':'')} href="/"><LayoutDashboard size={18}/>Overview</Link><div className="workspace-label subjects-label">YOUR SUBJECTS <span>05</span></div>{subjects.map(s=>{const Icon=icons[s.icon];return <div key={s.id}><Link href={'/subjects/'+s.id} className={'nav-item '+(activeSubject?.id===s.id?'selected':'')}><Icon size={18} style={{color:s.color}}/>{s.id}<span className="nav-count">{published.filter(n=>n.subject===s.id).length}</span></Link></div>})}<div className="sidebar-bottom"><div className="study-note"><GraduationCap size={21}/><strong>A little progress, every day.</strong><span>Your knowledge, one note at a time.</span></div><Link href="/admin" className={'nav-item '+(adminPage?'selected':'')}><Settings2 size={18}/>Manage notes<ChevronRight size={16}/></Link><div className="profile"><span className="avatar">RZ</span><div><strong>RenxZero</strong><small>University workspace</small></div></div></div></aside>
++ <aside className={'sidebar '+(mobile?'open':'')}><Link href="/" className="brand"><span className="brand-icon">R<span>z</span></span><span>RenxZero<small>YOUR STUDY SPACE</small></span></Link><button className="mobile-close icon-button" aria-label="Close navigation" onClick={()=>setMobile(false)}><X size={20}/></button><div className="workspace-label">WORKSPACE</div><Link className={'nav-item '+(path==='/'?'selected':'')} href="/"><LayoutDashboard size={18}/>Overview</Link><div className="workspace-label subjects-label">YOUR SUBJECTS <span>{String(termSubjects.length).padStart(2,'0')}</span></div>{semesters.length>1?<select className="term-picker" aria-label="Course and semester" value={chosenSem} onChange={e=>pickTerm(e.target.value)}>{curriculum.courses.filter(c=>c.semesters.length>0).map(c=><optgroup key={c.id} label={c.name}>{c.semesters.map(sm=><option key={sm.id} value={sm.id}>{sm.name}</option>)}</optgroup>)}</select>:term&&<div className="term-label">{term.course.name} · {term.semester.name}</div>}{termSubjects.map(s=>{const Icon=iconFor(s.icon);return <div key={s.id}><Link href={'/subjects/'+s.id} className={'nav-item '+(activeSubject?.id===s.id?'selected':'')}><Icon size={18} style={{color:s.color}}/>{s.id}<span className="nav-count">{published.filter(n=>n.subject===s.id).length}</span></Link></div>})}{!termSubjects.length&&<p className="nav-empty">{term?'No subjects in this semester yet.':'No courses yet.'}{admin&&<> <Link href="/admin/curriculum">Add some</Link></>}</p>}<div className="sidebar-bottom"><div className="study-note"><GraduationCap size={21}/><strong>A little progress, every day.</strong><span>Your knowledge, one note at a time.</span></div><Link href="/admin" className={'nav-item '+(adminPage&&!curriculumPage?'selected':'')}><Settings2 size={18}/>Manage notes<ChevronRight size={16}/></Link>{admin&&<Link href="/admin/curriculum" className={'nav-item '+(curriculumPage?'selected':'')}><Library size={18}/>Courses &amp; subjects<ChevronRight size={16}/></Link>}<div className="profile"><span className="avatar">RZ</span><div><strong>RenxZero</strong><small>University workspace</small></div></div></div></aside>
+  {mobile&&<button aria-label="Close menu" className="backdrop" onClick={()=>setMobile(false)}/>}
+- <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={14}/>{storagePage?<><Link href={'/subjects/'+subject!.id}>{subject!.id}</Link><ChevronRight size={14}/><strong>Storage</strong></>:<strong>{adminPage?'Manage notes':activeSubject?.id||'Overview'}</strong>}</div><div className="top-actions"><label className="search"><Search size={17}/><input aria-label="Search all notes" placeholder="Search your notes…" value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌕</kbd></label><button className="icon-button" aria-label={dark?'Switch to light mode':'Switch to dark mode'} onClick={()=>{setDark(!dark);try{localStorage.setItem('renxzero-theme',!dark?'dark':'light');}catch{}}}>{dark?<Sun size={19}/>:<Moon size={19}/>}</button></div></header>
++ <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={14}/>{storagePage?<><Link href={'/subjects/'+subject!.id}>{subject!.id}</Link><ChevronRight size={14}/><strong>Storage</strong></>:<strong>{adminPage?(curriculumPage?'Courses & subjects':'Manage notes'):activeSubject?.id||'Overview'}</strong>}</div><div className="top-actions"><label className="search"><Search size={17}/><input aria-label="Search all notes" placeholder="Search your notes…" value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌕</kbd></label><button className="icon-button" aria-label={dark?'Switch to light mode':'Switch to dark mode'} onClick={()=>{setDark(!dark);try{localStorage.setItem('renxzero-theme',!dark?'dark':'light');}catch{}}}>{dark?<Sun size={19}/>:<Moon size={19}/>}</button></div></header>
+  {error&&<div className="banner error" role="alert">{error}<button aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
+  {notice&&<div className="banner success" role="status"><span>{notice}</span><button aria-label="Dismiss message" onClick={()=>setNotice('')}><X size={16}/></button></div>}
+  {query?<main className="content"><div className="eyebrow">YOUR KNOWLEDGE BASE</div><h1>Search results</h1><p className="muted">{matches.length} {matches.length===1?'note':'notes'} matching “{query}”</p><div className="lesson-list">{matches.map(n=><Link href={'/notes/'+n.id} key={n.id} className="lesson-row"><FileText/><div><strong>{n.title}</strong><span>{n.subject} · {n.tags.join(' · ')}{!n.published?' · Draft':''}</span></div><ArrowRight size={18}/></Link>)}</div>{!matches.length&&<div className="empty">No matching notes. Try a subject name, tag, or different keyword.</div>}</main>
+- :adminPage?<main className="content admin-content"><div className="eyebrow">AUTHOR WORKSPACE</div><div className="page-heading"><div><h1>Manage your notes</h1><p className="muted">From a rough idea to something worth revisiting.</p></div>{admin&&<div className="actions"><button className="secondary" disabled={busy} onClick={()=>act(async()=>{if(dirty&&!window.confirm('Discard your unsaved changes and sign out?'))return;await request('/api/session',{method:'DELETE'});setDraft(null);setDirty(false);await reload();})}><LogOut size={16}/>Sign out</button><button className="primary" onClick={()=>edit()}><Plus size={17}/>New note</button></div>}</div>
++ :curriculumPage?<main className="content admin-content"><CurriculumEditor curriculum={curriculum} admin={admin} onSaved={setCurriculum}/></main>
++ :adminPage?<main className="content admin-content"><div className="eyebrow">AUTHOR WORKSPACE</div><div className="page-heading"><div><h1>Manage your notes</h1><p className="muted">From a rough idea to something worth revisiting.</p></div>{admin&&<div className="actions"><button className="secondary" disabled={busy} onClick={()=>act(async()=>{if(dirty&&!window.confirm('Discard your unsaved changes and sign out?'))return;await request('/api/session',{method:'DELETE'});setDraft(null);setDirty(false);await reload();})}><LogOut size={16}/>Sign out</button><Link className="secondary" href="/admin/curriculum"><Library size={16}/>Courses &amp; subjects</Link><button className="primary" onClick={()=>edit()}><Plus size={17}/>New note</button></div>}</div>
+  {!admin?<form className="login-card" onSubmit={e=>{e.preventDefault();act(async()=>{await request('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});setPassword('');await reload();});}}><span className="large-icon"><Settings2/></span><h2>Administrator access</h2><p className="muted">Sign in to create, edit, and publish your study notes.</p>{!configured&&<div className="banner">Set ADMIN_PASSWORD in your environment settings (at least 12 characters), then restart or redeploy.</div>}<label>Admin password<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/></label><button className="primary" disabled={busy||!configured}>{busy?'Signing in…':'Sign in'}</button></form>
+- :draft?<section className="editor"><div className="editor-top"><button className="text-button" onClick={closeEditor}><ArrowLeft size={16}/>All notes</button><span className="pill">{dirty?'Unsaved changes':draft.published?'Published':'Draft'}</span></div><div className="editor-fields"><label>Subject<select value={draft.subject} onChange={e=>{setDraft({...draft,subject:e.target.value});setDirty(true);}}>{subjects.map(s=><option key={s.id}>{s.id}</option>)}</select></label><label className="title-field">Lesson title<input placeholder="Give this lesson a title" value={draft.title} maxLength={160} onChange={e=>{setDraft({...draft,title:e.target.value});setDirty(true);}}/></label><label>Tags (comma-separated)<input placeholder="foundations, revision" value={tags} onChange={e=>{setTags(e.target.value);setDirty(true);}}/></label></div><div className="editor-toolbar"><span><FileText size={16}/>Markdown editor <small>Code fences · $math$ · $$equations$$</small></span><button className="secondary ai-button" disabled={busy||!draft.content.trim()} onClick={()=>act(async()=>{const original=draft.content;const result=await request('/api/improve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:original})});setSuggestion({...result,original});})}><Sparkles size={16}/>{busy?'Working…':'Improve with AI'}</button></div><div className="split-editor"><label className="source-pane"><span>YOUR MARKDOWN</span><textarea aria-label="Note Markdown" placeholder="Paste your lecture notes here…" value={draft.content} onChange={e=>{setDraft({...draft,content:e.target.value});setDirty(true);}}/></label><section className="preview-pane"><div className="pane-label">LIVE PREVIEW</div>{draft.content?<NoteMarkdown content={draft.content}/>:<p className="muted">Your formatted notes will appear here.</p>}</section></div><div className="editor-footer"><span className="muted">{draft.content.split(/\s+/).filter(Boolean).length} words · {dirty?'Remember to save your changes.':'All changes saved.'}</span><div className="actions"><button className="secondary" disabled={busy} onClick={()=>save(false)}>Save draft</button><button className="primary" disabled={busy} onClick={()=>save(true)}>Publish note<ArrowRight size={16}/></button></div></div></section>
++ :draft?<section className="editor"><div className="editor-top"><button className="text-button" onClick={closeEditor}><ArrowLeft size={16}/>All notes</button><span className="pill">{dirty?'Unsaved changes':draft.published?'Published':'Draft'}</span></div><div className="editor-fields"><label>Subject<select value={draft.subject} onChange={e=>{setDraft({...draft,subject:e.target.value});setDirty(true);}}>{curriculum.courses.flatMap(c=>c.semesters.filter(sm=>sm.subjects.length).map(sm=><optgroup key={sm.id} label={c.id+' · '+sm.name}>{sm.subjects.map(s=><option key={s.id} value={s.id}>{s.id} — {s.name}</option>)}</optgroup>))}</select></label><label className="title-field">Lesson title<input placeholder="Give this lesson a title" value={draft.title} maxLength={160} onChange={e=>{setDraft({...draft,title:e.target.value});setDirty(true);}}/></label><label>Tags (comma-separated)<input placeholder="foundations, revision" value={tags} onChange={e=>{setTags(e.target.value);setDirty(true);}}/></label></div><div className="editor-toolbar"><span><FileText size={16}/>Markdown editor <small>Code fences · $math$ · $$equations$$</small></span><button className="secondary ai-button" disabled={busy||!draft.content.trim()} onClick={()=>act(async()=>{const original=draft.content;const result=await request('/api/improve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:original})});setSuggestion({...result,original});})}><Sparkles size={16}/>{busy?'Working…':'Improve with AI'}</button></div><div className="split-editor"><label className="source-pane"><span>YOUR MARKDOWN</span><textarea aria-label="Note Markdown" placeholder="Paste your lecture notes here…" value={draft.content} onChange={e=>{setDraft({...draft,content:e.target.value});setDirty(true);}}/></label><section className="preview-pane"><div className="pane-label">LIVE PREVIEW</div>{draft.content?<NoteMarkdown content={draft.content}/>:<p className="muted">Your formatted notes will appear here.</p>}</section></div><div className="editor-footer"><span className="muted">{draft.content.split(/\s+/).filter(Boolean).length} words · {dirty?'Remember to save your changes.':'All changes saved.'}</span><div className="actions"><button className="secondary" disabled={busy} onClick={()=>save(false)}>Save draft</button><button className="primary" disabled={busy} onClick={()=>save(true)}>Publish note<ArrowRight size={16}/></button></div></div></section>
+  :<><div className="admin-summary">{notes.length} notes <span>·</span> {notes.filter(n=>!n.published).length} drafts</div><div className="lesson-list">{notes.map(n=><div className="lesson-row" key={n.id}><span className="file-icon"><FileText size={20}/></span><div><strong>{n.title}</strong><span>{n.subject} · Updated {new Date(n.updatedAt).toLocaleDateString()}</span></div><span className={'pill '+(n.published?'published':'')}>{n.published?'Published':'Draft'}</span><button className="secondary" onClick={()=>edit(n)}>Edit</button><button className="icon-button" aria-label={'Delete '+n.title} onClick={()=>setDeleteId(n.id)}><Trash2 size={17}/></button></div>)}</div>{!notes.length&&<div className="empty">Your first note starts here. Select New note to begin.</div>}</>}
+  </main>
+  :noteId?<>{note?<div className="reading-layout"><main className="reading"><Link href={'/subjects/'+note.subject} className="text-button"><ArrowLeft size={16}/>Back to {note.subject}</Link><NoteNav notes={published.filter(n=>n.subject===note.subject)} id={note.id} position="top"/><div className="eyebrow">{note.subject} / LESSON {String(published.filter(n=>n.subject===note.subject).findIndex(n=>n.id===note.id)+1).padStart(2,'0')}</div><h1>{note.title}</h1><div className="reading-meta"><span><Clock size={15}/>{Math.max(1,Math.ceil(note.content.split(/\s+/).length/200))} min read</span><span>Updated {new Date(note.updatedAt).toLocaleDateString()}</span>{!note.published&&<span className="pill">Draft</span>}</div><div className="tags">{note.tags.map(t=><span className="tag" key={t}>{t}</span>)}</div><NoteMarkdown content={note.content}/><div className="completion-box"><div><strong>One more concept, understood.</strong><p className="muted">Keep track of your learning on this device.</p></div><button className={completed.includes(note.id)?'secondary':'primary'} onClick={toggleComplete}><Check size={17}/>{completed.includes(note.id)?'Completed':'Mark as complete'}</button></div><NoteNav notes={published.filter(n=>n.subject===note.subject)} id={note.id} position="bottom"/>{note.published&&<Comments noteId={note.id} dark={dark}/>}</main><aside className="toc"><div className="workspace-label">ON THIS PAGE</div>{note.content.split('\n').filter(l=>/^## / .test(l)).map((l,i)=><a href={'#'+headingId(l.slice(3))} key={i}>{l.slice(3)}</a>)}<div className="toc-bottom"><BookOpen size={18}/><p>Learn at your own pace.<br/>Come back whenever you need.</p></div></aside></div>:<main className="content empty">{loaded?'This note does not exist or is not published.':'Loading your lesson…'}<Link href="/">Back to overview</Link></main>}</>
+  :storagePage&&subject?<main className="content"><Storage key={subject.id+'/'+(parts[3]||'')} subject={subject.id} subjectName={subject.name} folderId={parts[3]} admin={admin}/></main>
+- :<main className="content"><div className="eyebrow">{subject?'SUBJECT WORKSPACE':'A PLACE FOR EVERYTHING YOU LEARN'}</div><div className="page-heading"><div><h1>{subject?subject.name:'Your study workspace'}<span className="heading-dot">.</span></h1><p className="muted">{subject?subject.description:'Five subjects. One clear mind. Pick up where you left off.'}</p></div><Link className="primary" href="/admin"><Plus size={17}/>Add a note</Link></div>
+- {!subject&&<><div className="stats"><div><span className="stat-icon purple"><BookOpen size={20}/></span><div><strong>05</strong><span>Subjects this semester</span></div></div><div><span className="stat-icon blue"><FileText size={20}/></span><div><strong>{String(published.length).padStart(2,'0')}</strong><span>Notes in your library</span></div></div><div><span className="stat-icon green"><Check size={20}/></span><div><strong>{published.filter(n=>completed.includes(n.id)).length}<small> / {published.length}</small></strong><span>Lessons completed</span></div></div></div><div className="section-heading"><h2>Your subjects</h2><span>THIS SEMESTER</span></div><div className="subject-grid">{subjects.map(s=>{const Icon=icons[s.icon],items=published.filter(n=>n.subject===s.id);return <Link href={'/subjects/'+s.id} className="subject-card" key={s.id} style={{'--subject-color':s.color} as React.CSSProperties}><div className="card-top"><span className="subject-icon"><Icon size={24}/></span><ArrowRight size={19}/></div><span className="subject-code">{s.id}</span><h3>{s.name}</h3><p>{s.description}</p><div className="card-divider"/><div className="card-meta"><span>{items.length} {items.length===1?'lesson':'lessons'}</span><span>{progress(items)}% complete</span></div><progress max="100" value={progress(items)} aria-label={s.id+' completion'}/></Link>})}</div></>}
++ :<main className="content"><div className="eyebrow">{subject?'SUBJECT WORKSPACE':'A PLACE FOR EVERYTHING YOU LEARN'}</div><div className="page-heading"><div><h1>{subject?subject.name:'Your study workspace'}<span className="heading-dot">.</span></h1><p className="muted">{subject?subject.description:'One clear mind. Pick up where you left off.'}</p></div><Link className="primary" href="/admin"><Plus size={17}/>Add a note</Link></div>
++ {!subject&&<><div className="stats"><div><span className="stat-icon purple"><BookOpen size={20}/></span><div><strong>{String(termSubjects.length).padStart(2,'0')}</strong><span>Subjects this semester</span></div></div><div><span className="stat-icon blue"><FileText size={20}/></span><div><strong>{String(published.length).padStart(2,'0')}</strong><span>Notes in your library</span></div></div><div><span className="stat-icon green"><Check size={20}/></span><div><strong>{published.filter(n=>completed.includes(n.id)).length}<small> / {published.length}</small></strong><span>Lessons completed</span></div></div></div><div className="section-heading"><h2>Your subjects</h2><span>{term?(term.course.name+' · '+term.semester.name).toUpperCase():'NO COURSES YET'}</span></div><div className="subject-grid">{termSubjects.map(s=>{const Icon=iconFor(s.icon),items=published.filter(n=>n.subject===s.id);return <Link href={'/subjects/'+s.id} className="subject-card" key={s.id} style={{'--subject-color':s.color} as React.CSSProperties}><div className="card-top"><span className="subject-icon"><Icon size={24}/></span><ArrowRight size={19}/></div><span className="subject-code">{s.id}</span><h3>{s.name}</h3><p>{s.description}</p><div className="card-divider"/><div className="card-meta"><span>{items.length} {items.length===1?'lesson':'lessons'}</span><span>{progress(items)}% complete</span></div><progress max="100" value={progress(items)} aria-label={s.id+' completion'}/></Link>})}</div>{!termSubjects.length&&<div className="empty"><h3>{term?'No subjects in this semester yet':'No courses yet'}</h3><p>{admin?'Add them under Courses & subjects.':'The administrator has not added any subjects here yet.'}</p>{admin&&<Link className="secondary" href="/admin/curriculum">Courses &amp; subjects</Link>}</div>}</>}
+  {subject&&<div className="subject-banner" style={{'--subject-color':subject.color} as React.CSSProperties}><span className="subject-icon"><CardIcon size={28}/></span><div><strong>{published.filter(n=>n.subject===subject.id).length} lessons</strong><span>{progress(published.filter(n=>n.subject===subject.id))}% completed on this device</span></div><progress max="100" value={progress(published.filter(n=>n.subject===subject.id))} aria-label="Subject completion"/></div>}
+  {subject&&<Link className="storage-card" href={'/subjects/'+subject.id+'/storage'} style={{'--subject-color':subject.color} as React.CSSProperties}><span className="subject-icon"><FolderOpen size={24}/></span><div><strong>Storage</strong><span>Folders, PDFs and files for {subject.id}</span></div><ArrowRight size={18}/></Link>}
+  <div className="section-heading"><h2>{subject?'Lessons & topics':'Your latest notes'}</h2><span>{subject?subject.id:'KEEP LEARNING'}</span></div>{subject&&<div className="tag-filters"><button className={!tag?'active':''} onClick={()=>setTag('')}>All topics</button>{[...new Set(published.filter(n=>n.subject===subject.id).flatMap(n=>n.tags))].map(t=><button key={t} className={tag===t?'active':''} onClick={()=>setTag(t)}>{t}</button>)}</div>}<div className="lesson-list">{visible.map(n=><Link key={n.id} href={'/notes/'+n.id} className="lesson-row"><span className="file-icon">{completed.includes(n.id)?<Check size={22}/>:<FileText size={22}/>}</span><div><strong>{n.title}</strong><span>{n.subject} <i>·</i> {n.tags.slice(0,2).join(' · ')} <i>·</i> {Math.max(1,Math.ceil(n.content.split(/\s+/).length/200))} min read</span></div><span className="read-label">Read lesson</span><ArrowRight size={18}/></Link>)}</div>{!visible.length&&<div className="empty"><BookOpen size={30}/><h3>{loaded?'A fresh page for your ideas':'Loading your notes…'}</h3><p>{loaded?'Add your first lesson to start building this subject.':''}</p>{loaded&&<Link href="/admin" className="secondary">Add a note<Plus size={16}/></Link>}</div>}{subject&&<Resources key={subject.id} subject={subject.id} admin={admin}/>}<footer>Made for curious minds.<span>RenxZero / Notes</span></footer></main>}
+diff --git a/lib/curriculum-model.ts b/lib/curriculum-model.ts
+new file mode 100644
+index 0000000..a17c0fc
+--- /dev/null
++++ b/lib/curriculum-model.ts
+@@ -0,0 +1,176 @@
++// The structure of the study space: Course -> Semester -> Subject. Managed by the administrator in the app.
++// Pure functions only (no I/O) so the server, the editor screen and the tests all share the same rules.
++import { InputError } from './errors.ts';
++
++export type SubjectDef = { id: string; name: string; description: string; icon: string; color: string };
++export type Semester = { id: string; name: string; subjects: SubjectDef[] };
++export type Course = { id: string; name: string; semesters: Semester[] };
++export type Curriculum = { version: number; courses: Course[] };
++export type FlatSubject = SubjectDef & { courseId: string; courseName: string; semesterId: string; semesterName: string };
++
++export const LIMITS = { courses: 10, semestersPerCourse: 12, subjectsPerSemester: 20, subjects: 150 };
++// These names must exist in components/subject-icons.ts (a test checks this).
++export const ICON_NAMES = ['Braces', 'Cpu', 'Globe', 'Database', 'Boxes', 'BookOpen', 'Calculator', 'Network', 'ShieldCheck', 'Code', 'Server', 'BarChart3', 'Briefcase', 'Layers', 'FlaskConical', 'Palette', 'Terminal', 'Workflow', 'Lightbulb', 'Languages', 'Atom', 'Smartphone', 'Cloud', 'Bot', 'Brain', 'Users'] as const;
++export const PALETTE = ['#7367eb', '#269e8a', '#d48a32', '#3a8edb', '#cd6499', '#d6564f', '#5aa13c', '#8a6bd1', '#2f9bb3', '#a8873a'] as const;
++
++export const courseIdPattern = /^[A-Z][A-Z0-9]{1,7}$/;
++export const subjectIdPattern = /^[A-Z0-9][A-Z0-9_-]{1,11}$/;
++export const semesterIdPattern = /^[a-z0-9][a-z0-9-]{2,23}$/;
++const control = /[\u0000-\u001f\u007f]/;
++
++// The subjects that existed before this feature. Seeded as Computer Science -> Year 1 · Semester 2 so existing notes and files stay linked.
++export const DEFAULT_COURSES: Course[] = [{
++  id: 'CS', name: 'Computer Science', semesters: [{
++    id: 'y1s2', name: 'Year 1 · Semester 2', subjects: [
++      { id: 'FOA', name: 'Fundamentals of Algorithms', description: 'Think clearly. Solve efficiently.', icon: 'Braces', color: '#7367eb' },
++      { id: 'OS', name: 'Operating Systems', description: 'Understand what runs underneath.', icon: 'Cpu', color: '#269e8a' },
++      { id: 'IWT', name: 'Internet & Web Technologies', description: 'Build for a connected world.', icon: 'Globe', color: '#d48a32' },
++      { id: 'DBMS', name: 'Database Management Systems', description: 'Give your data a structure.', icon: 'Database', color: '#3a8edb' },
++      { id: 'OOP', name: 'Object-Oriented Programming', description: 'Model ideas through objects.', icon: 'Boxes', color: '#cd6499' },
++    ],
++  }],
++}];
++// version 0 = "built in, never saved". Used until the administrator saves a curriculum.
++export const defaultCurriculum: Curriculum = { version: 0, courses: DEFAULT_COURSES };
++
++const clean = (v: unknown, label: string, max: number, min = 1): string => {
++  if (typeof v !== 'string') throw new InputError(`${label} is required.`);
++  const s = v.normalize('NFC').replace(/\s+/g, ' ').trim();
++  if (s.length < min) throw new InputError(`${label} is required.`);
++  if (s.length > max) throw new InputError(`${label} must be ${max} characters or fewer.`);
++  if (control.test(s)) throw new InputError(`${label} contains invalid characters.`);
++  return s;
++};
++const upperId = (v: unknown, label: string, pattern: RegExp, hint: string): string => {
++  const s = typeof v === 'string' ? v.trim().toUpperCase() : '';
++  if (!pattern.test(s)) throw new InputError(`${label} ${hint}`);
++  return s;
++};
++
++// Validates and normalises a whole curriculum. Throws InputError with a message safe to show.
++export function validateCurriculum(input: unknown): Course[] {
++  if (!Array.isArray(input)) throw new InputError('Invalid curriculum.');
++  if (input.length > LIMITS.courses) throw new InputError(`You can have up to ${LIMITS.courses} courses.`);
++  const courseIds = new Set<string>(), semesterIds = new Set<string>(), subjectIds = new Set<string>(), courseNames = new Set<string>();
++  let total = 0;
++  const courses = input.map((c: any): Course => {
++    if (!c || typeof c !== 'object') throw new InputError('Invalid course.');
++    const id = upperId(c.id, 'Course code', courseIdPattern, 'must be 2–8 letters or digits and start with a letter (for example CS or IS).');
++    const name = clean(c.name, 'Course name', 60);
++    if (courseIds.has(id)) throw new InputError(`The course code ${id} is used twice.`);
++    if (courseNames.has(name.toLowerCase())) throw new InputError(`There are two courses named “${name}”.`);
++    courseIds.add(id); courseNames.add(name.toLowerCase());
++    if (!Array.isArray(c.semesters)) throw new InputError('Invalid course.');
++    if (c.semesters.length > LIMITS.semestersPerCourse) throw new InputError(`${name} can have up to ${LIMITS.semestersPerCourse} semesters.`);
++    const semesterNames = new Set<string>();
++    const semesters = c.semesters.map((s: any): Semester => {
++      if (!s || typeof s !== 'object') throw new InputError('Invalid semester.');
++      const sid = typeof s.id === 'string' ? s.id.trim().toLowerCase() : '';
++      if (!semesterIdPattern.test(sid)) throw new InputError('Invalid semester.');
++      const sname = clean(s.name, 'Semester name', 60);
++      if (semesterIds.has(sid)) throw new InputError('A semester appears twice.');
++      if (semesterNames.has(sname.toLowerCase())) throw new InputError(`${name} already has a semester named “${sname}”.`);
++      semesterIds.add(sid); semesterNames.add(sname.toLowerCase());
++      if (!Array.isArray(s.subjects)) throw new InputError('Invalid semester.');
++      if (s.subjects.length > LIMITS.subjectsPerSemester) throw new InputError(`${sname} can have up to ${LIMITS.subjectsPerSemester} subjects.`);
++      const subjectNames = new Set<string>();
++      const subjects = s.subjects.map((x: any): SubjectDef => {
++        if (!x || typeof x !== 'object') throw new InputError('Invalid subject.');
++        const xid = upperId(x.id, 'Subject code', subjectIdPattern, 'must be 2–12 letters, digits, - or _ (for example DBMS).');
++        const xname = clean(x.name, 'Subject name', 80);
++        const description = x.description === undefined || x.description === null || x.description === '' ? '' : clean(x.description, 'Description', 100, 0);
++        const icon = ICON_NAMES.includes(x.icon) ? x.icon : null;
++        if (!icon) throw new InputError('Choose an icon for each subject.');
++        const color = typeof x.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(x.color) ? x.color.toLowerCase() : null;
++        if (!color) throw new InputError('Choose a colour for each subject.');
++        if (subjectIds.has(xid)) throw new InputError(`The subject code ${xid} is already used. Codes must be unique across all courses (for example ${id}-${xid}).`);
++        if (subjectNames.has(xname.toLowerCase())) throw new InputError(`${sname} already has a subject named “${xname}”.`);
++        subjectIds.add(xid); subjectNames.add(xname.toLowerCase()); total++;
++        return { id: xid, name: xname, description, icon, color };
++      });
++      return { id: sid, name: sname, subjects };
++    });
++    return { id, name, semesters };
++  });
++  if (total > LIMITS.subjects) throw new InputError(`You can have up to ${LIMITS.subjects} subjects in total.`);
++  return courses;
++}
++
++// For data read back from a cache or the network: never throws.
++export function parseCurriculum(raw: unknown): Curriculum | null {
++  if (!raw || typeof raw !== 'object') return null;
++  const r = raw as { version?: unknown; courses?: unknown };
++  if (typeof r.version !== 'number') return null;
++  try { return { version: r.version, courses: validateCurriculum(r.courses) }; } catch { return null; }
++}
++
++// ---- reading helpers ------------------------------------------------------------------------
++export function allSubjects(c: Curriculum): FlatSubject[] {
++  return c.courses.flatMap(course => course.semesters.flatMap(sem => sem.subjects.map(s => ({ ...s, courseId: course.id, courseName: course.name, semesterId: sem.id, semesterName: sem.name }))));
++}
++export const subjectIdsOf = (c: Curriculum) => allSubjects(c).map(s => s.id);
++export const allSemesters = (c: Curriculum) => c.courses.flatMap(course => course.semesters.map(semester => ({ course, semester })));
++export function termOf(c: Curriculum, subjectId: string) {
++  for (const course of c.courses) for (const semester of course.semesters) if (semester.subjects.some(s => s.id === subjectId)) return { course, semester };
++  return null;
++}
++export function removedSubjectIds(before: Course[], after: Course[]): string[] {
++  const now = new Set(allSubjects({ version: 0, courses: after }).map(s => s.id));
++  return allSubjects({ version: 0, courses: before }).map(s => s.id).filter(id => !now.has(id));
++}
++// Which semester the sidebar/overview should show: the subject being viewed, else the saved choice, else the first with subjects.
++export function pickSemesterId(c: Curriculum, activeSubjectId?: string, saved?: string): string {
++  const all = allSemesters(c);
++  const fromSubject = activeSubjectId ? termOf(c, activeSubjectId)?.semester.id : undefined;
++  if (fromSubject) return fromSubject;
++  if (saved && all.some(t => t.semester.id === saved)) return saved;
++  return (all.find(t => t.semester.subjects.length) || all[0])?.semester.id || '';
++}
++
++// ---- suggestions -----------------------------------------------------------------------------
++export function suggestCode(name: string, taken: string[], max: number, min = 2): string {
++  const words = name.toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').split(' ').filter(w => w && !['OF', 'AND', 'THE', 'TO', 'IN', 'FOR'].includes(w));
++  let base = words.length > 1 ? words.map(w => w[0]).join('') : (words[0] || '').slice(0, 4);
++  base = base.slice(0, max);
++  while (base.length < min) base += 'X';
++  const used = new Set(taken.map(t => t.toUpperCase()));
++  if (!used.has(base)) return base;
++  for (let n = 2; n < 100; n++) { const suffix = String(n), candidate = base.slice(0, max - suffix.length) + suffix; if (!used.has(candidate)) return candidate; }
++  return base;
++}
++export function suggestSemesterName(course: Course): string {
++  const n = course.semesters.length;
++  return `Year ${Math.floor(n / 2) + 1} · Semester ${(n % 2) + 1}`;
++}
++export const newSemesterId = (random: () => number = Math.random) => 'sem-' + Math.floor(random() * 36 ** 6).toString(36).padStart(6, '0');
++
++// ---- editing (immutable; used by the editor screen and the tests) ---------------------------
++const edit = (c: Curriculum, courses: Course[]): Curriculum => ({ ...c, courses });
++const mapCourse = (c: Curriculum, id: string, fn: (course: Course) => Course) => edit(c, c.courses.map(x => x.id === id ? fn(x) : x));
++const mapSemester = (c: Curriculum, id: string, fn: (s: Semester) => Semester) => edit(c, c.courses.map(course => ({ ...course, semesters: course.semesters.map(s => s.id === id ? fn(s) : s) })));
++function moveIn<T extends { id: string }>(list: T[], id: string, direction: -1 | 1): T[] {
++  const i = list.findIndex(x => x.id === id), j = i + direction;
++  if (i < 0 || j < 0 || j >= list.length) return list;
++  const copy = [...list]; [copy[i], copy[j]] = [copy[j], copy[i]]; return copy;
++}
++const checked = (c: Curriculum) => { validateCurriculum(c.courses); return c; };
++
++export const addCourse = (c: Curriculum, id: string, name: string) => checked(edit(c, [...c.courses, { id: id.trim().toUpperCase(), name, semesters: [] }]));
++export const renameCourse = (c: Curriculum, id: string, name: string) => mapCourse(c, id, x => ({ ...x, name }));
++export const removeCourse = (c: Curriculum, id: string) => edit(c, c.courses.filter(x => x.id !== id));
++export const moveCourse = (c: Curriculum, id: string, d: -1 | 1) => edit(c, moveIn(c.courses, id, d));
++
++export const addSemester = (c: Curriculum, courseId: string, name: string, id = newSemesterId()) => checked(mapCourse(c, courseId, x => ({ ...x, semesters: [...x.semesters, { id, name, subjects: [] }] })));
++export const renameSemester = (c: Curriculum, id: string, name: string) => mapSemester(c, id, s => ({ ...s, name }));
++export const removeSemester = (c: Curriculum, id: string) => edit(c, c.courses.map(course => ({ ...course, semesters: course.semesters.filter(s => s.id !== id) })));
++export const moveSemester = (c: Curriculum, courseId: string, id: string, d: -1 | 1) => mapCourse(c, courseId, x => ({ ...x, semesters: moveIn(x.semesters, id, d) }));
++
++export const addSubject = (c: Curriculum, semesterId: string, subject: SubjectDef) => checked(mapSemester(c, semesterId, s => ({ ...s, subjects: [...s.subjects, { ...subject, id: subject.id.trim().toUpperCase() }] })));
++// The code (id) never changes: notes and files are linked to it.
++export const updateSubject = (c: Curriculum, id: string, patch: Partial<Omit<SubjectDef, 'id'>>) => edit(c, c.courses.map(course => ({ ...course, semesters: course.semesters.map(s => ({ ...s, subjects: s.subjects.map(x => x.id === id ? { ...x, ...patch, id: x.id } : x) })) })));
++export const removeSubject = (c: Curriculum, id: string) => edit(c, c.courses.map(course => ({ ...course, semesters: course.semesters.map(s => ({ ...s, subjects: s.subjects.filter(x => x.id !== id) })) })));
++export const moveSubject = (c: Curriculum, semesterId: string, id: string, d: -1 | 1) => mapSemester(c, semesterId, s => ({ ...s, subjects: moveIn(s.subjects, id, d) }));
++
++// Which subjects would be removed if this course/semester/subject were deleted
++export const subjectsInCourse = (course: Course) => course.semesters.flatMap(s => s.subjects.map(x => x.id));
++export const subjectsInSemester = (s: Semester) => s.subjects.map(x => x.id);
+diff --git a/lib/curriculum.ts b/lib/curriculum.ts
+new file mode 100644
+index 0000000..ac59fe6
+--- /dev/null
++++ b/lib/curriculum.ts
+@@ -0,0 +1,130 @@
++import { dirname, resolve } from 'node:path';
++import { mkdirSync } from 'node:fs';
++import { cloudConfigured, cloudRequired, supabaseRequest } from './supabase-repository.ts';
++import { InputError } from './errors.ts';
++import { DEFAULT_COURSES, allSubjects, defaultCurriculum, parseCurriculum, removedSubjectIds, subjectIdsOf, validateCurriculum, type Course, type Curriculum } from './curriculum-model.ts';
++import { countItems } from './storage.ts';
++import { listResources } from './resources.ts';
++
++// ---- where the single curriculum record lives ---------------------------------------------------
++type Found = { courses: Course[]; version: number };
++interface Store {
++  read(): Promise<Found | null | 'missing'>; // 'missing' = the table has not been created yet (supabase/curriculum.sql not run)
++  create(courses: Course[]): Promise<boolean>;
++  update(courses: Course[], expected: number): Promise<boolean>; // false when someone saved in between
++}
++const isMissingTable = (e: unknown) => { const x = e as { status?: number; code?: string }; return x?.code === 'PGRST205' || x?.code === '42P01' || x?.status === 404; };
++
++const cloudStore: Store = {
++  async read() {
++    try {
++      const rows: { data: unknown; version: number }[] = await supabaseRequest('curriculum?select=data,version&id=eq.1');
++      if (!rows[0]) return null;
++      const parsed = parseCurriculum({ version: rows[0].version, courses: rows[0].data });
++      if (!parsed) throw Error('Stored curriculum is invalid.');
++      return { courses: parsed.courses, version: parsed.version };
++    } catch (e) { if (isMissingTable(e)) return 'missing'; throw e; }
++  },
++  async create(courses) {
++    const rows: unknown[] = await supabaseRequest('curriculum?on_conflict=id', { method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=representation' }, body: JSON.stringify({ id: 1, data: courses, version: 1 }) });
++    return rows.length === 1;
++  },
++  async update(courses, expected) {
++    const rows: unknown[] = await supabaseRequest(`curriculum?id=eq.1&version=eq.${expected}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ data: courses, version: expected + 1, updated_at: new Date().toISOString() }) });
++    return rows.length === 1;
++  },
++};
++
++let local: Store | undefined;
++async function localStore(): Promise<Store> {
++  if (local) return local;
++  const { DatabaseSync } = await import('node:sqlite'); // never loaded on Vercel
++  const path = process.env.DATABASE_PATH || resolve('data/renxzero.sqlite');
++  mkdirSync(dirname(path), { recursive: true });
++  const db = new DatabaseSync(path);
++  db.exec('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS curriculum (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL);');
++  local = {
++    read: async () => {
++      const row = db.prepare('SELECT data, version FROM curriculum WHERE id = 1').get() as { data: string; version: number } | undefined;
++      if (!row) return null;
++      const parsed = parseCurriculum({ version: row.version, courses: JSON.parse(row.data) });
++      if (!parsed) throw Error('Stored curriculum is invalid.');
++      return { courses: parsed.courses, version: parsed.version };
++    },
++    create: async courses => Number(db.prepare('INSERT OR IGNORE INTO curriculum (id, data, version, updated_at) VALUES (1, ?, 1, ?)').run(JSON.stringify(courses), new Date().toISOString()).changes) === 1,
++    update: async (courses, expected) => Number(db.prepare('UPDATE curriculum SET data = ?, version = ?, updated_at = ? WHERE id = 1 AND version = ?').run(JSON.stringify(courses), expected + 1, new Date().toISOString(), expected).changes) === 1,
++  };
++  return local;
++}
++async function store(): Promise<Store> {
++  if (cloudConfigured()) return cloudStore;
++  if (cloudRequired()) throw Error('Curriculum storage is not configured.');
++  return localStore();
++}
++
++// ---- reading -------------------------------------------------------------------------------------------
++// Before the administrator has saved anything (or before curriculum.sql has been run) the built-in
++// five subjects are used, so the app keeps working exactly as before. Real outages throw instead of
++// pretending the defaults are the truth.
++export async function getCurriculum(): Promise<Curriculum> {
++  const found = await (await store()).read();
++  return found && found !== 'missing' ? found : defaultCurriculum;
++}
++export const subjectIds = async () => subjectIdsOf(await getCurriculum());
++export async function requireSubject(id: string): Promise<string> {
++  if (typeof id !== 'string' || !(await subjectIds()).includes(id)) throw new InputError('Invalid subject.');
++  return id;
++}
++
++// ---- usage (what would be lost by deleting) -------------------------------------------------------
++export type Deps = { notes(): Promise<Record<string, number>>; files(): Promise<Record<string, number>>; resources(subject: string): Promise<number> };
++const defaultDeps: Deps = {
++  notes: async () => {
++    const { repository } = await import('./repository');
++    const counts: Record<string, number> = {};
++    for (const n of await (await repository()).list(true)) counts[n.subject] = (counts[n.subject] || 0) + 1;
++    return counts;
++  },
++  files: countItems,
++  resources: async subject => (await listResources(subject)).length,
++};
++// Notes and files per subject, shown in the editor. (PDF resources are checked when a subject is actually removed.)
++export async function subjectUsage(deps: Deps = defaultDeps): Promise<Record<string, { notes: number; files: number }>> {
++  const [notes, files] = await Promise.all([deps.notes(), deps.files()]);
++  const out: Record<string, { notes: number; files: number }> = {};
++  for (const id of new Set([...Object.keys(notes), ...Object.keys(files)])) out[id] = { notes: notes[id] || 0, files: files[id] || 0 };
++  return out;
++}
++
++async function assertRemovable(removed: string[], before: Course[], deps: Deps) {
++  if (!removed.length) return;
++  const names = new Map(allSubjects({ version: 0, courses: before }).map(s => [s.id, s.name]));
++  const [notes, files] = await Promise.all([deps.notes(), deps.files()]);
++  const blocked: string[] = [];
++  for (const id of removed) {
++    const parts: string[] = [];
++    if (notes[id]) parts.push(`${notes[id]} ${notes[id] === 1 ? 'note' : 'notes'}`);
++    if (files[id]) parts.push(`${files[id]} ${files[id] === 1 ? 'file or folder' : 'files and folders'}`);
++    let pdfs = 0;
++    try { pdfs = await deps.resources(id); } catch { throw new InputError(`Could not check the PDFs in ${id}. Try again in a moment.`); } // unknown = not safe to delete
++    if (pdfs) parts.push(`${pdfs} ${pdfs === 1 ? 'PDF' : 'PDFs'}`);
++    if (parts.length) blocked.push(`“${id}” (${names.get(id) || id}) still has ${parts.join(' and ')}`);
++  }
++  if (blocked.length) throw new InputError(`A subject that still has content cannot be removed: ${blocked.slice(0, 3).join('; ')}${blocked.length > 3 ? `; and ${blocked.length - 3} more` : ''}. Delete or move that content first.`);
++}
++
++// ---- saving -----------------------------------------------------------------------------------------------
++export async function saveCurriculum(input: unknown, deps: Deps = defaultDeps): Promise<Curriculum> {
++  if (!input || typeof input !== 'object') throw new InputError('Invalid request.');
++  const { version, courses: raw } = input as { version?: unknown; courses?: unknown };
++  if (typeof version !== 'number' || !Number.isInteger(version) || version < 0) throw new InputError('Invalid request.');
++  const courses = validateCurriculum(raw);
++  const db = await store(), found = await db.read();
++  if (found === 'missing') throw Object.assign(new InputError('Courses & subjects are not set up in the database yet. Run supabase/curriculum.sql in the Supabase SQL Editor, then try again.'), { code: 'SETUP' });
++  const current: Found = found ?? { courses: DEFAULT_COURSES, version: 0 };
++  if (version !== current.version) throw Object.assign(new InputError('This was changed somewhere else. Reload the page to see the latest version, then make your change again.'), { code: 'CONFLICT' });
++  await assertRemovable(removedSubjectIds(current.courses, courses), current.courses, deps);
++  const saved = found === null ? await db.create(courses) : await db.update(courses, current.version);
++  if (!saved) throw Object.assign(new InputError('This was changed somewhere else. Reload the page to see the latest version, then make your change again.'), { code: 'CONFLICT' });
++  return { version: current.version + 1, courses };
++}
+diff --git a/lib/errors.ts b/lib/errors.ts
+new file mode 100644
+index 0000000..ec3d460
+--- /dev/null
++++ b/lib/errors.ts
+@@ -0,0 +1,3 @@
++// Safe-to-show validation failures. Anything else is treated as an infrastructure error by the APIs.
++// code: 'ENOENT' = not found (404), 'CONFLICT' = changed elsewhere (409).
++export class InputError extends Error { code?: string; }
+diff --git a/lib/model.ts b/lib/model.ts
+index 36c4996..acf9d25 100644
+--- a/lib/model.ts
++++ b/lib/model.ts
+@@ -1,15 +1,11 @@
+-export const subjects = [
+-  { id: 'FOA', name: 'Fundamentals of Algorithms', description: 'Think clearly. Solve efficiently.', icon: 'Braces', color: '#7367eb' },
+-  { id: 'OS', name: 'Operating Systems', description: 'Understand what runs underneath.', icon: 'Cpu', color: '#269e8a' },
+-  { id: 'IWT', name: 'Internet & Web Technologies', description: 'Build for a connected world.', icon: 'Globe', color: '#d48a32' },
+-  { id: 'DBMS', name: 'Database Management Systems', description: 'Give your data a structure.', icon: 'Database', color: '#3a8edb' },
+-  { id: 'OOP', name: 'Object-Oriented Programming', description: 'Model ideas through objects.', icon: 'Boxes', color: '#cd6499' },
+-] as const;
++import { DEFAULT_COURSES } from './curriculum-model.ts';
++// The built-in subjects (used until the administrator saves their own curriculum). The live list comes from /api/curriculum.
++export const subjects = DEFAULT_COURSES.flatMap(c => c.semesters.flatMap(s => s.subjects));
+ export type Note = { id: string; subject: string; title: string; content: string; tags: string[]; published: boolean; updatedAt: string };
+-export function validateNote(input: unknown): Omit<Note,'id'|'updatedAt'> {
++export function validateNote(input: unknown, validSubjects: readonly string[] = subjects.map(s => s.id)): Omit<Note,'id'|'updatedAt'> {
+   if (!input || typeof input !== 'object') throw new Error('Note is required.');
+   const v = input as Record<string,unknown>;
+-  if (!subjects.some(s=>s.id===v.subject)) throw new Error('Choose a valid subject.');
++  if (typeof v.subject !== 'string' || !validSubjects.includes(v.subject)) throw new Error('Choose a valid subject.');
+   if (typeof v.title !== 'string' || !v.title.trim() || v.title.length>160) throw new Error('Title must be 1–160 characters.');
+   if (typeof v.content !== 'string' || !v.content.trim() || v.content.length>100000) throw new Error('Notes must be 1–100,000 characters.');
+   if (!Array.isArray(v.tags) || v.tags.length>12 || v.tags.some(t=>typeof t!=='string'||t.length>40)) throw new Error('Use up to 12 tags, each under 40 characters.');
+diff --git a/lib/offline.ts b/lib/offline.ts
+index 56ee3db..1b2c4bd 100644
+--- a/lib/offline.ts
++++ b/lib/offline.ts
+@@ -1,13 +1,15 @@
+ // Browser-side offline support for the installable app (PWA).
+ // Everything is stored with the standard Cache API, so the service worker (public/sw.js) can read the
+ // same data. Cache names here MUST match public/sw.js.
++import { defaultCurriculum, parseCurriculum, type Curriculum } from './curriculum-model.ts';
+ import { corePages, diffNotes, describeDiff, hasChanges, noteUrl, parseSnapshot, publishedOnly, type NotesDiff, type Snapshot, type SyncNote } from './sync-model.ts';
+ 
+ export const CACHE = { meta: 'rz-meta', files: 'rz-files', pages: 'rz-pages-v1' } as const;
+ export const SNAPSHOT_URL = '/__rz/snapshot.json';
++export const CURRICULUM_URL = '/__rz/curriculum.json';
+ 
+ export type Pending = { diff: NotesDiff; remote: SyncNote[] };
+-export type WorkspaceData = { notes: SyncNote[]; admin: boolean; configured: boolean; offline: boolean; pending: Pending | null; savedAt: string | null };
++export type WorkspaceData = { curriculum: Curriculum; notes: SyncNote[]; admin: boolean; configured: boolean; offline: boolean; pending: Pending | null; savedAt: string | null };
+ 
+ class Offline extends Error {}
+ const absolute = (path: string) => new URL(path, location.origin).href;
+@@ -34,6 +36,29 @@ export async function writeSnapshot(notes: SyncNote[]): Promise<Snapshot> {
+   return snapshot;
+ }
+ 
++// ---- the courses / semesters / subjects ----------------------------------------------------------------------
++// Unlike notes, the structure is always taken live when online (it is just the shape of the app) and
++// kept for offline use. It never fails the app: offline or on a server problem the saved copy is used.
++export async function readCachedCurriculum(): Promise<Curriculum | null> {
++  if (!cacheSupported()) return null;
++  try { const hit = await (await caches.open(CACHE.meta)).match(CURRICULUM_URL); return hit ? parseCurriculum(await hit.json()) : null; } catch { return null; }
++}
++export async function writeCachedCurriculum(curriculum: Curriculum) {
++  if (cacheSupported()) await (await caches.open(CACHE.meta)).put(CURRICULUM_URL, new Response(JSON.stringify(curriculum), { headers: { 'Content-Type': 'application/json' } }));
++}
++export async function loadCurriculum(): Promise<Curriculum> {
++  const cached = await readCachedCurriculum();
++  try {
++    const live = parseCurriculum(await getJson('/api/curriculum'));
++    if (live) {
++      if (live.version === 0 && cached && cached.version > 0) return cached; // never replace a saved curriculum with the built-in default
++      await writeCachedCurriculum(live).catch(() => {});
++      return live;
++    }
++  } catch { /* offline or server problem */ }
++  return cached || defaultCurriculum;
++}
++
+ // Loads what the workspace shows.
+ //  - Browser tab or administrator: always live from the server (and keeps a copy for offline use).
+ //  - Installed app, reader: shows the saved copy and, if the server has newer notes, reports them as
+@@ -42,29 +67,30 @@ export async function writeSnapshot(notes: SyncNote[]): Promise<Snapshot> {
+ export async function loadWorkspaceData(): Promise<WorkspaceData> {
+   try {
+     const session = await getJson('/api/session');
++    const curriculum = await loadCurriculum();
+     const live = !isStandalone() || session.admin;
+     if (live) {
+       const notes: SyncNote[] = await getJson('/api/notes');
+       await writeSnapshot(notes).catch(() => {});
+-      return { notes, admin: !!session.admin, configured: session.configured !== false, offline: false, pending: null, savedAt: null };
++      return { curriculum, notes, admin: !!session.admin, configured: session.configured !== false, offline: false, pending: null, savedAt: null };
+     }
+     const saved = await readSnapshot();
+     if (!saved) {
+       const remote = publishedOnly(await getJson('/api/notes') as SyncNote[]);
+       const first = await writeSnapshot(remote);
+-      return { notes: remote, admin: false, configured: session.configured !== false, offline: false, pending: null, savedAt: first.savedAt };
++      return { curriculum, notes: remote, admin: false, configured: session.configured !== false, offline: false, pending: null, savedAt: first.savedAt };
+     }
+     let pending: Pending | null = null;
+     try {
+       const remote = publishedOnly(await getJson('/api/notes') as SyncNote[]), diff = diffNotes(saved.notes, remote);
+       if (hasChanges(diff)) pending = { diff, remote };
+     } catch (e) { if (!(e instanceof Offline)) { /* server hiccup: keep showing saved notes */ } }
+-    return { notes: saved.notes, admin: false, configured: session.configured !== false, offline: false, pending, savedAt: saved.savedAt };
++    return { curriculum, notes: saved.notes, admin: false, configured: session.configured !== false, offline: false, pending, savedAt: saved.savedAt };
+   } catch (e) {
+     if (!(e instanceof Offline)) throw e;
+     const saved = await readSnapshot();
+     if (!saved) throw Error('You are offline and no notes are saved on this device yet. Open the app once with internet.');
+-    return { notes: saved.notes, admin: false, configured: true, offline: true, pending: null, savedAt: saved.savedAt };
++    return { curriculum: await readCachedCurriculum() || defaultCurriculum, notes: saved.notes, admin: false, configured: true, offline: true, pending: null, savedAt: saved.savedAt };
+   }
+ }
+ 
+@@ -96,7 +122,7 @@ export async function warmPages(urls: string[]) {
+   };
+   await Promise.all([worker(), worker(), worker()]);
+ }
+-export const warmNotePages = (notes: SyncNote[]) => warmPages([...corePages, ...notes.map(n => noteUrl(n.id))]);
++export const warmNotePages = (notes: SyncNote[], subjectIds: string[]) => warmPages([...corePages(subjectIds), ...notes.map(n => noteUrl(n.id))]);
+ 
+ // ---- files saved for offline use (only when the user asks) ----------------------------------
+ export async function savedFileKeys(): Promise<Set<string>> {
+diff --git a/lib/resources-model.ts b/lib/resources-model.ts
+index af80f20..9946aa7 100644
+--- a/lib/resources-model.ts
++++ b/lib/resources-model.ts
+@@ -1,6 +1,7 @@
+ export const MAX_PDF_BYTES = 4 * 1024 * 1024;
+ export type Resource = { key: string; name: string; size: number; createdAt: string };
+-export function validSubject(subject: string) { return ['FOA','OS','IWT','DBMS','OOP'].includes(subject); }
++// Format only; the API checks that the subject exists in the curriculum.
++export function validSubject(subject: string) { return /^[A-Z0-9][A-Z0-9_-]{1,11}$/.test(subject); }
+ export function validResourceKey(key: string) { return /^[a-f0-9-]{36}--[A-Za-z0-9_. -]{1,140}\.pdf$/.test(key); }
+ export function safePdfName(name: string) {
+   return name.replace(/\.pdf$/i, '').replace(/[^A-Za-z0-9_. -]/g, '_').slice(0, 130).trim() + '.pdf';
+diff --git a/lib/storage-model.ts b/lib/storage-model.ts
+index d94a498..2400c59 100644
+--- a/lib/storage-model.ts
++++ b/lib/storage-model.ts
+@@ -4,8 +4,8 @@ export const MAX_FILE_BYTES = 4 * 1024 * 1024; // keeps uploads inside Vercel's
+ export const MAX_DEPTH = 6; // folders nested deeper than this are rejected
+ export const MAX_ITEMS_PER_SUBJECT = 1000;
+ 
+-// Safe-to-show validation failures. Anything else is treated as an infrastructure error by the API.
+-export class InputError extends Error { code?: string; }
++import { InputError } from './errors.ts';
++export { InputError };
+ 
+ export type StorageItem = {
+   id: string;
+@@ -19,7 +19,8 @@ export type StorageItem = {
+ 
+ export const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+ export const isUuid = (v: unknown): v is string => typeof v === 'string' && uuidPattern.test(v);
+-export const validStorageSubject = (s: string) => ['FOA', 'OS', 'IWT', 'DBMS', 'OOP'].includes(s);
++// Format only (keeps ids safe in URLs and file paths). Whether the subject exists is checked by the API against the curriculum.
++export const validStorageSubject = (s: string) => /^[A-Z0-9][A-Z0-9_-]{1,11}$/.test(s);
+ 
+ // Allowed types. The extension decides the Content-Type we serve, never the browser-supplied one.
+ // SVG/HTML are deliberately absent: they can run script when opened.
+diff --git a/lib/storage.ts b/lib/storage.ts
+index 53d6754..3f7e03a 100644
+--- a/lib/storage.ts
++++ b/lib/storage.ts
+@@ -13,6 +13,7 @@ interface Meta {
+   insert(item: StorageItem): Promise<void>;
+   rename(subject: string, id: string, name: string): Promise<void>;
+   remove(subject: string, ids: string[]): Promise<void>;
++  counts(): Promise<Record<string, number>>;
+ }
+ 
+ type Row = { id: string; subject: string; parent_id: string | null; kind: 'folder' | 'file'; name: string; size: number; created_at: string };
+@@ -34,6 +35,14 @@ const cloudMeta: Meta = {
+     const rows: Row[] = await supabaseRequest(`storage_items?id=eq.${id}&subject=eq.${subject}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ name }) });
+     if (!rows[0]) throw new InputError('That item no longer exists.');
+   },
++  async counts() {
++    const out: Record<string, number> = {};
++    for (let offset = 0; ; offset += 1000) {
++      const page: { subject: string }[] = await supabaseRequest(`storage_items?select=subject&order=id.asc&limit=1000&offset=${offset}`);
++      for (const r of page) out[r.subject] = (out[r.subject] || 0) + 1;
++      if (page.length < 1000) return out;
++    }
++  },
+   async remove(subject, ids) {
+     for (let n = 0; n < ids.length; n += 50) await supabaseRequest(`storage_items?subject=eq.${subject}&id=in.(${ids.slice(n, n + 50).join(',')})`, { method: 'DELETE' });
+   },
+@@ -53,6 +62,7 @@ async function localMeta(): Promise<Meta> {
+     insert: async i => { db.prepare('INSERT INTO storage_items VALUES (?,?,?,?,?,?,?)').run(i.id, i.subject, i.parentId, i.kind, i.name, i.size, i.createdAt); },
+     rename: async (subject, id, name) => { db.prepare('UPDATE storage_items SET name=? WHERE id=? AND subject=?').run(name, id, subject); },
+     remove: async (subject, ids) => { for (const id of ids) db.prepare('DELETE FROM storage_items WHERE id=? AND subject=?').run(id, subject); },
++    counts: async () => Object.fromEntries((db.prepare('SELECT subject, COUNT(*) AS n FROM storage_items GROUP BY subject').all() as unknown as { subject: string; n: number }[]).map(r => [r.subject, Number(r.n)])),
+   };
+   return sqlite;
+ }
+@@ -92,6 +102,13 @@ const parentFolder = (items: StorageItem[], parentId: string | null) => {
+   return path;
+ };
+ 
++// How many folders/files each subject holds (used to stop a subject with content from being deleted).
++export async function countItems(): Promise<Record<string, number>> {
++  if (cloudConfigured()) return cloudMeta.counts();
++  if (cloudRequired()) throw new Error('Storage is not configured.');
++  return (await localMeta()).counts();
++}
++
+ export async function listItems(subject: string) { return (await meta(subject)).list(subject); }
+ 
+ export async function createFolder(subject: string, parentId: string | null, rawName: unknown): Promise<StorageItem> {
+diff --git a/lib/supabase-repository.ts b/lib/supabase-repository.ts
+index 33248bc..7cb293c 100644
+--- a/lib/supabase-repository.ts
++++ b/lib/supabase-repository.ts
+@@ -14,7 +14,10 @@ export async function supabaseRequest(path: string, init: RequestInit = {}) {
+     ...init, cache: 'no-store', signal: AbortSignal.timeout(15000),
+     headers: { apikey: key, ...(key.startsWith('eyJ') ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json', ...init.headers },
+   });
+-  if (!response.ok) throw new Error('Database unavailable. Check Supabase settings and run supabase/setup.sql.');
++  if (!response.ok) {
++    const body = await response.json().catch(() => null);
++    throw Object.assign(new Error('Database unavailable. Check Supabase settings and run supabase/setup.sql.'), { status: response.status, code: typeof body?.code === 'string' ? body.code : undefined });
++  }
+   return response.status === 204 ? null : response.json();
+ }
+ type Row = Omit<Note, 'updatedAt'> & { updated_at: string };
+diff --git a/lib/sync-model.ts b/lib/sync-model.ts
+index e81b587..a1cfe53 100644
+--- a/lib/sync-model.ts
++++ b/lib/sync-model.ts
+@@ -36,6 +36,5 @@ export function parseSnapshot(raw: unknown): Snapshot | null {
+ }
+ 
+ export const noteUrl = (id: string) => '/notes/' + encodeURIComponent(id);
+-export const subjectIds = ['FOA', 'OS', 'IWT', 'DBMS', 'OOP'];
+-// Pages that must be available offline for navigation to keep working without a network.
+-export const corePages = ['/', ...subjectIds.map(s => '/subjects/' + s), ...subjectIds.map(s => '/subjects/' + s + '/storage')];
++// Pages that must be available offline for navigation to keep working without a network (one set per subject in the curriculum).
++export const corePages = (subjectIds: string[]) => ['/', ...subjectIds.map(s => '/subjects/' + s), ...subjectIds.map(s => '/subjects/' + s + '/storage')];
+diff --git a/supabase/curriculum.sql b/supabase/curriculum.sql
+new file mode 100644
+index 0000000..42540f6
+--- /dev/null
++++ b/supabase/curriculum.sql
+@@ -0,0 +1,43 @@
++-- Run once in Supabase SQL Editor to turn on "Courses & subjects" management. Safe to rerun.
++-- Your existing notes, PDFs and files are not changed. The five subjects you already have are saved as
++-- Computer Science → Year 1 · Semester 2, and from then on you manage everything inside the app.
++begin;
++
++create table if not exists public.curriculum (
++  id int primary key default 1 check (id = 1),     -- exactly one row
++  data jsonb not null,                              -- courses -> semesters -> subjects
++  version int not null default 1,                   -- bumped on every save (prevents overwriting a newer edit)
++  updated_at timestamptz not null default now()
++);
++alter table public.curriculum enable row level security;
++-- No direct browser access. Only the app server's secret key can read or write this table.
++revoke all on public.curriculum from anon, authenticated;
++grant all on public.curriculum to service_role;
++
++-- Starting structure: the five subjects you already have. Only inserted if the table is empty.
++insert into public.curriculum (id, data) values (1, $json$[{"id":"CS","name":"Computer Science","semesters":[{"id":"y1s2","name":"Year 1 · Semester 2","subjects":[{"id":"FOA","name":"Fundamentals of Algorithms","description":"Think clearly. Solve efficiently.","icon":"Braces","color":"#7367eb"},{"id":"OS","name":"Operating Systems","description":"Understand what runs underneath.","icon":"Cpu","color":"#269e8a"},{"id":"IWT","name":"Internet & Web Technologies","description":"Build for a connected world.","icon":"Globe","color":"#d48a32"},{"id":"DBMS","name":"Database Management Systems","description":"Give your data a structure.","icon":"Database","color":"#3a8edb"},{"id":"OOP","name":"Object-Oriented Programming","description":"Model ideas through objects.","icon":"Boxes","color":"#cd6499"}]}]}]$json$::jsonb)
++on conflict (id) do nothing;
++
++-- Notes and files used to accept only the five original subject codes. Replace that fixed list with a
++-- format rule so any subject you create in the app is accepted (the app checks the subject exists).
++do $$
++declare r record;
++begin
++  for r in
++    select c.conrelid::regclass as tbl, c.conname
++    from pg_constraint c
++    where c.contype = 'c'
++      and c.conrelid in (to_regclass('public.notes'), to_regclass('public.storage_items'))
++      and pg_get_constraintdef(c.oid) ilike '%subject%'
++  loop
++    execute format('alter table %s drop constraint %I', r.tbl, r.conname);
++  end loop;
++  if to_regclass('public.notes') is not null then
++    alter table public.notes add constraint notes_subject_format check (subject ~ '^[A-Z0-9][A-Z0-9_-]{1,11}$');
++  end if;
++  if to_regclass('public.storage_items') is not null then
++    alter table public.storage_items add constraint storage_items_subject_format check (subject ~ '^[A-Z0-9][A-Z0-9_-]{1,11}$');
++  end if;
++end $$;
++
++commit;
+diff --git a/supabase/schema.sql b/supabase/schema.sql
+index 5796ffa..85c42fa 100644
+--- a/supabase/schema.sql
++++ b/supabase/schema.sql
+@@ -2,7 +2,7 @@
+ begin;
+ create table if not exists public.notes (
+   id text primary key,
+-  subject text not null check (subject in ('FOA','OS','IWT','DBMS','OOP')),
++  subject text not null check (subject ~ '^[A-Z0-9][A-Z0-9_-]{1,11}$'),
+   title text not null check (length(title) between 1 and 160),
+   content text not null check (length(content) between 1 and 100000),
+   tags jsonb not null default '[]'::jsonb check (jsonb_typeof(tags)='array'),
+@@ -38,4 +38,19 @@ end;
+ $$;
+ revoke all on function public.consume_login_attempt() from public, anon, authenticated;
+ grant execute on function public.consume_login_attempt() to service_role;
++-- Courses, semesters and subjects (managed in the app). Starts with your original five subjects.
++create table if not exists public.curriculum (
++  id int primary key default 1 check (id = 1),     -- exactly one row
++  data jsonb not null,                              -- courses -> semesters -> subjects
++  version int not null default 1,                   -- bumped on every save (prevents overwriting a newer edit)
++  updated_at timestamptz not null default now()
++);
++alter table public.curriculum enable row level security;
++-- No direct browser access. Only the app server's secret key can read or write this table.
++revoke all on public.curriculum from anon, authenticated;
++grant all on public.curriculum to service_role;
++
++-- Starting structure: the five subjects you already have. Only inserted if the table is empty.
++insert into public.curriculum (id, data) values (1, $json$[{"id":"CS","name":"Computer Science","semesters":[{"id":"y1s2","name":"Year 1 · Semester 2","subjects":[{"id":"FOA","name":"Fundamentals of Algorithms","description":"Think clearly. Solve efficiently.","icon":"Braces","color":"#7367eb"},{"id":"OS","name":"Operating Systems","description":"Understand what runs underneath.","icon":"Cpu","color":"#269e8a"},{"id":"IWT","name":"Internet & Web Technologies","description":"Build for a connected world.","icon":"Globe","color":"#d48a32"},{"id":"DBMS","name":"Database Management Systems","description":"Give your data a structure.","icon":"Database","color":"#3a8edb"},{"id":"OOP","name":"Object-Oriented Programming","description":"Model ideas through objects.","icon":"Boxes","color":"#cd6499"}]}]}]$json$::jsonb)
++on conflict (id) do nothing;
+ commit;
+diff --git a/supabase/setup.sql b/supabase/setup.sql
+index e7441ac..89b5c49 100644
+--- a/supabase/setup.sql
++++ b/supabase/setup.sql
+@@ -2,7 +2,7 @@
+ begin;
+ create table if not exists public.notes (
+   id text primary key,
+-  subject text not null check (subject in ('FOA','OS','IWT','DBMS','OOP')),
++  subject text not null check (subject ~ '^[A-Z0-9][A-Z0-9_-]{1,11}$'),
+   title text not null check (length(title) between 1 and 160),
+   content text not null check (length(content) between 1 and 100000),
+   tags jsonb not null default '[]'::jsonb check (jsonb_typeof(tags)='array'),
+@@ -38,6 +38,21 @@ end;
+ $$;
+ revoke all on function public.consume_login_attempt() from public, anon, authenticated;
+ grant execute on function public.consume_login_attempt() to service_role;
++-- Courses, semesters and subjects (managed in the app). Starts with your original five subjects.
++create table if not exists public.curriculum (
++  id int primary key default 1 check (id = 1),     -- exactly one row
++  data jsonb not null,                              -- courses -> semesters -> subjects
++  version int not null default 1,                   -- bumped on every save (prevents overwriting a newer edit)
++  updated_at timestamptz not null default now()
++);
++alter table public.curriculum enable row level security;
++-- No direct browser access. Only the app server's secret key can read or write this table.
++revoke all on public.curriculum from anon, authenticated;
++grant all on public.curriculum to service_role;
++
++-- Starting structure: the five subjects you already have. Only inserted if the table is empty.
++insert into public.curriculum (id, data) values (1, $json$[{"id":"CS","name":"Computer Science","semesters":[{"id":"y1s2","name":"Year 1 · Semester 2","subjects":[{"id":"FOA","name":"Fundamentals of Algorithms","description":"Think clearly. Solve efficiently.","icon":"Braces","color":"#7367eb"},{"id":"OS","name":"Operating Systems","description":"Understand what runs underneath.","icon":"Cpu","color":"#269e8a"},{"id":"IWT","name":"Internet & Web Technologies","description":"Build for a connected world.","icon":"Globe","color":"#d48a32"},{"id":"DBMS","name":"Database Management Systems","description":"Give your data a structure.","icon":"Database","color":"#3a8edb"},{"id":"OOP","name":"Object-Oriented Programming","description":"Model ideas through objects.","icon":"Boxes","color":"#cd6499"}]}]}]$json$::jsonb)
++on conflict (id) do nothing;
+ commit;
+ 
+ -- Seed once. Rerunning setup never overwrites edits or restores a deleted lesson.
+diff --git a/supabase/storage.sql b/supabase/storage.sql
+index 539c510..ed62e82 100644
+--- a/supabase/storage.sql
++++ b/supabase/storage.sql
+@@ -3,7 +3,7 @@
+ begin;
+ create table if not exists public.storage_items (
+   id uuid primary key,
+-  subject text not null check (subject in ('FOA','OS','IWT','DBMS','OOP')),
++  subject text not null check (subject ~ '^[A-Z0-9][A-Z0-9_-]{1,11}$'),
+   parent_id uuid references public.storage_items(id) on delete cascade,
+   kind text not null check (kind in ('folder','file')),
+   name text not null check (length(name) between 1 and 140),
+diff --git a/tests/curriculum-server.test.ts b/tests/curriculum-server.test.ts
+new file mode 100644
+index 0000000..972e06d
+--- /dev/null
++++ b/tests/curriculum-server.test.ts
+@@ -0,0 +1,138 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { mkdtempSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { InputError } from '../lib/errors.ts';
++import { addCourse, addSemester, addSubject, defaultCurriculum, moveSubject, removeSemester, removeSubject, subjectIdsOf, updateSubject, type Curriculum, type SubjectDef } from '../lib/curriculum-model.ts';
++
++const subj = (id: string, over: Partial<SubjectDef> = {}): SubjectDef => ({ id, name: 'Subject ' + id, description: '', icon: 'Code', color: '#7367eb', ...over });
++const none = { notes: async () => ({}), files: async () => ({}), resources: async () => 0 };
++const failsWith = (re: RegExp, code?: string) => (e: unknown) => e instanceof InputError && re.test(e.message) && (code === undefined || e.code === code);
++
++delete process.env.SUPABASE_URL; delete process.env.SUPABASE_SECRET_KEY; delete process.env.VERCEL;
++process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'curr-')), 'test.sqlite');
++const c = await import('../lib/curriculum.ts');
++const storage = await import('../lib/storage.ts');
++
++test('before anything is saved the built-in five subjects are used, and unknown subjects are rejected', async () => {
++  const cur = await c.getCurriculum();
++  assert.equal(cur.version, 0); assert.deepEqual(subjectIdsOf(cur), ['FOA', 'OS', 'IWT', 'DBMS', 'OOP']);
++  assert.equal(await c.requireSubject('FOA'), 'FOA');
++  for (const bad of ['ISDB', '', 'foa', '../x', undefined as unknown as string, 5 as unknown as string]) await assert.rejects(() => c.requireSubject(bad), failsWith(/Invalid subject/));
++});
++
++test('the administrator workflow: add a course, a semester and a subject, and use it straight away', async () => {
++  let draft: Curriculum = defaultCurriculum;
++  draft = addCourse(draft, 'IS', 'Information Systems');
++  draft = addSemester(draft, 'IS', 'Year 2 · Semester 1', 'sem-is21');
++  draft = addSubject(draft, 'sem-is21', subj('ISDB', { name: 'Database Design' }));
++  const saved = await c.saveCurriculum(draft);
++  assert.equal(saved.version, 1);
++  const read = await c.getCurriculum();
++  assert.equal(read.version, 1); assert.ok(subjectIdsOf(read).includes('ISDB') && subjectIdsOf(read).includes('FOA'));
++  assert.equal(await c.requireSubject('ISDB'), 'ISDB', 'the new subject is valid immediately');
++  const folder = await storage.createFolder('ISDB', null, 'Week 1');
++  assert.equal(folder.subject, 'ISDB', 'Storage works for the new subject');
++});
++
++test('stale edits are refused instead of overwriting newer ones', async () => {
++  const now = await c.getCurriculum();
++  const mine = addCourse(now, 'SE', 'Software Engineering');
++  await c.saveCurriculum(mine);                                                    // first admin tab saves
++  await assert.rejects(() => c.saveCurriculum({ version: now.version, courses: addCourse(now, 'IT', 'Information Technology').courses }), failsWith(/changed somewhere else/, 'CONFLICT')); // second tab still has the old version
++  assert.ok(!(await c.getCurriculum()).courses.some(x => x.id === 'IT'));
++  assert.equal((await c.getCurriculum()).version, now.version + 1);
++});
++
++test('invalid curricula are rejected and nothing changes', async () => {
++  const now = await c.getCurriculum();
++  const bad = { version: now.version, courses: [{ id: 'cs', name: 'X', semesters: [{ id: 'sem-1', name: 'S', subjects: [subj('AB'), subj('AB', { name: 'Other' })] }] }] };
++  await assert.rejects(() => c.saveCurriculum(bad), failsWith(/already used/));
++  for (const junk of [null, 'x', {}, { version: 'a', courses: [] }, { version: -1, courses: [] }, { version: 1.5, courses: [] }, { courses: [] }]) await assert.rejects(() => c.saveCurriculum(junk), InputError);
++  assert.equal((await c.getCurriculum()).version, now.version);
++});
++
++test('a subject that still has content cannot be removed, and the message says why', async () => {
++  const now = await c.getCurriculum();
++  const without = (id: string) => ({ version: now.version, courses: removeSubject(now, id).courses });
++  await assert.rejects(() => c.saveCurriculum(without('FOA'), { ...none, notes: async () => ({ FOA: 3 }) }), failsWith(/“FOA” \(Fundamentals of Algorithms\) still has 3 notes/));
++  await assert.rejects(() => c.saveCurriculum(without('FOA'), { ...none, notes: async () => ({ FOA: 1 }) }), failsWith(/1 note\b/));
++  await assert.rejects(() => c.saveCurriculum(without('OS'), { ...none, files: async () => ({ OS: 4 }) }), failsWith(/4 files and folders/));
++  await assert.rejects(() => c.saveCurriculum(without('IWT'), { ...none, resources: async () => 2 }), failsWith(/2 PDFs/));
++  await assert.rejects(() => c.saveCurriculum(without('IWT'), { ...none, notes: async () => ({ IWT: 2 }), files: async () => ({ IWT: 1 }), resources: async () => 1 }), failsWith(/2 notes and 1 file or folder and 1 PDF/));
++  await assert.rejects(() => c.saveCurriculum(without('DBMS'), { ...none, resources: async () => { throw Error('storage down'); } }), failsWith(/Could not check the PDFs/), 'unknown is treated as not safe');
++  assert.ok(subjectIdsOf(await c.getCurriculum()).includes('FOA'), 'nothing was removed');
++});
++
++test('real storage content also protects a subject (uses the actual database, not a mock)', async () => {
++  const now = await c.getCurriculum();
++  await storage.createFolder('IWT', null, 'Slides');
++  await assert.rejects(() => c.saveCurriculum({ version: now.version, courses: removeSubject(now, 'IWT').courses }, { ...none, files: storage.countItems }), failsWith(/“IWT” .* still has 1 file or folder/));
++  assert.deepEqual((await c.subjectUsage({ ...none, files: storage.countItems, notes: async () => ({ FOA: 2 }) })).IWT, { notes: 0, files: 1 });
++  assert.deepEqual((await c.subjectUsage({ ...none, files: storage.countItems, notes: async () => ({ FOA: 2 }) })).FOA, { notes: 2, files: 0 });
++});
++
++test('removing a whole semester or course is blocked if anything inside has content, and lists several', async () => {
++  const now = await c.getCurriculum();
++  const noSemester = { version: now.version, courses: removeSemester(now, 'y1s2').courses };
++  await assert.rejects(() => c.saveCurriculum(noSemester, { ...none, notes: async () => ({ FOA: 1, OS: 1, IWT: 1, DBMS: 1 }) }), failsWith(/“FOA”.*; “OS”.*; “IWT”.*; and 1 more/));
++});
++
++test('renaming, restyling and reordering never touch content, even when a subject has notes', async () => {
++  const now = await c.getCurriculum(), busy = { ...none, notes: async () => ({ FOA: 9, OS: 9 }), files: async () => ({ FOA: 9 }), resources: async () => 5 };
++  let next = updateSubject(now, 'FOA', { name: 'Algorithms & Complexity', color: '#112233', icon: 'Brain' });
++  next = moveSubject(next, 'y1s2', 'FOA', 1);
++  const saved = await c.saveCurriculum({ version: now.version, courses: next.courses }, busy);
++  assert.equal(saved.version, now.version + 1);
++  assert.deepEqual(subjectIdsOf(await c.getCurriculum()).slice(0, 2), ['OS', 'FOA']);
++});
++
++test('an empty subject can be deleted, and then its code stops being valid', async () => {
++  const now = await c.getCurriculum();
++  await c.saveCurriculum({ version: now.version, courses: removeSubject(now, 'OOP').courses }, none);
++  await assert.rejects(() => c.requireSubject('OOP'), failsWith(/Invalid subject/));
++});
++
++// ---------------------------------------------------------------------------------------------------------
++test('cloud mode: reads, creates, updates with a version check, and tells "not set up" apart from an outage', async () => {
++  const originalFetch = globalThis.fetch, env = { ...process.env };
++  process.env.SUPABASE_URL = 'https://example.supabase.co'; process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
++  let row: { id: number; data: unknown; version: number } | null = null; let mode: 'ok' | 'missing' | 'outage' = 'ok';
++  const calls: { url: string; init: RequestInit }[] = [];
++  globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
++    calls.push({ url: String(url), init });
++    if (!String(url).includes('/rest/v1/curriculum')) return Response.json({});
++    if (mode === 'missing') return Response.json({ code: 'PGRST205', message: 'Could not find the table' }, { status: 404 });
++    if (mode === 'outage') return new Response('secret internal details', { status: 500 });
++    const method = init.method || 'GET', u = new URL(String(url));
++    if (method === 'GET') return Response.json(row ? [row] : []);
++    if (method === 'POST') { if (row) return Response.json([]); const b = JSON.parse(init.body as string); row = b; return Response.json([b], { status: 201 }); }
++    if (method === 'PATCH') { const want = Number(u.searchParams.get('version')!.replace('eq.', '')); if (!row || row.version !== want) return Response.json([]); const b = JSON.parse(init.body as string); row = { ...row, data: b.data, version: b.version }; return Response.json([row]); }
++    return new Response(null, { status: 204 });
++  }) as typeof fetch;
++  try {
++    const specifier = '../lib/curriculum.ts?cloud';
++    const cc = (await import(specifier)) as typeof import('../lib/curriculum.ts');
++    assert.equal((await cc.getCurriculum()).version, 0, 'empty table → built-in default');
++    const first = await cc.saveCurriculum({ version: 0, courses: addCourse(defaultCurriculum, 'IS', 'Information Systems').courses }, none);
++    assert.equal(first.version, 1);
++    const post = calls.find(x => x.init.method === 'POST')!;
++    assert.match((post.init.headers as Record<string, string>).Prefer, /return=representation/); assert.equal((post.init.headers as Record<string, string>).apikey, 'sb_secret_test');
++    assert.deepEqual(JSON.parse(post.init.body as string).version, 1);
++    assert.deepEqual(subjectIdsOf(await cc.getCurriculum()).length, 5);
++    const second = await cc.saveCurriculum({ version: 1, courses: addCourse(await cc.getCurriculum(), 'SE', 'Software Engineering').courses }, none);
++    assert.equal(second.version, 2); assert.equal(row!.version, 2);
++    assert.ok(calls.some(x => x.init.method === 'PATCH' && x.url.includes('version=eq.1')), 'update is conditional on the version it read');
++    await assert.rejects(() => cc.saveCurriculum({ version: 1, courses: [] }, none), failsWith(/changed somewhere else/, 'CONFLICT'));
++    row!.version = 9;                                                                // somebody else saved between our read and write
++    const racing = addCourse({ version: 2, courses: (await cc.getCurriculum()).courses }, 'IT', 'Information Technology');
++    await assert.rejects(() => cc.saveCurriculum({ version: 9, courses: racing.courses }, none).then(() => { row!.version = 10; return cc.saveCurriculum({ version: 9, courses: racing.courses }, none); }), failsWith(/changed somewhere else/, 'CONFLICT'));
++    mode = 'missing';
++    assert.equal((await cc.getCurriculum()).version, 0, 'table not created yet → the app keeps working with the built-in subjects');
++    await assert.rejects(() => cc.saveCurriculum({ version: 0, courses: [] }, none), failsWith(/Run supabase\/curriculum\.sql/, 'SETUP'));
++    mode = 'outage';
++    await assert.rejects(() => cc.getCurriculum(), (e: Error) => !(e instanceof InputError) && !/secret internal/.test(e.message), 'a real outage is an error, never silently replaced by defaults');
++    await assert.rejects(() => cc.requireSubject('FOA'), (e: Error) => !(e instanceof InputError));
++  } finally { globalThis.fetch = originalFetch; process.env = env; }
++});
+diff --git a/tests/curriculum.test.ts b/tests/curriculum.test.ts
+new file mode 100644
+index 0000000..a860fcc
+--- /dev/null
++++ b/tests/curriculum.test.ts
+@@ -0,0 +1,118 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import * as lucide from 'lucide-react';
++import { subjectIcons } from '../components/subject-icons.ts';
++import { InputError } from '../lib/errors.ts';
++import { DEFAULT_COURSES, ICON_NAMES, LIMITS, addCourse, addSemester, addSubject, allSemesters, allSubjects, defaultCurriculum, moveCourse, moveSemester, moveSubject, newSemesterId, parseCurriculum, pickSemesterId, removeCourse, removeSemester, removeSubject, removedSubjectIds, renameCourse, renameSemester, subjectIdsOf, suggestCode, suggestSemesterName, termOf, updateSubject, validateCurriculum, type Curriculum, type SubjectDef } from '../lib/curriculum-model.ts';
++
++const subj = (id: string, over: Partial<SubjectDef> = {}): SubjectDef => ({ id, name: 'Subject ' + id, description: '', icon: 'Code', color: '#7367eb', ...over });
++const base = (): Curriculum => ({ version: 3, courses: structuredClone(DEFAULT_COURSES) });
++
++test('the built-in default keeps the original five subjects and is itself valid', () => {
++  assert.deepEqual(subjectIdsOf(defaultCurriculum), ['FOA', 'OS', 'IWT', 'DBMS', 'OOP']);
++  assert.deepEqual(validateCurriculum(DEFAULT_COURSES), DEFAULT_COURSES);
++  assert.equal(termOf(defaultCurriculum, 'DBMS')!.semester.name, 'Year 1 · Semester 2');
++});
++
++test('the SQL seed matches the built-in default (no drift between code and database)', () => {
++  const sql = readFileSync(new URL('../supabase/curriculum.sql', import.meta.url), 'utf8');
++  const seed = /\$json\$([\s\S]*?)\$json\$/.exec(sql);
++  assert.ok(seed, 'seed JSON present between $json$ markers');
++  assert.deepEqual(JSON.parse(seed![1]), DEFAULT_COURSES);
++});
++
++test('every icon in the picker exists in the icon map the UI uses', () => {
++  for (const name of ICON_NAMES) assert.ok((lucide as Record<string, unknown>)[name], name + ' exists in lucide-react');
++});
++
++test('the icon picker and the icon component map list exactly the same icons', () => {
++  assert.deepEqual(Object.keys(subjectIcons).sort(), [...ICON_NAMES].sort());
++});
++
++test('validation normalises values and gives clear messages', () => {
++  const ok = validateCurriculum([{ id: ' is ', name: '  Information   Systems ', semesters: [{ id: 'SEM-ABC123', name: 'Year 2 · Semester 1', subjects: [{ id: 'ds-1', name: ' Data  Structures ', description: undefined, icon: 'Code', color: '#ABCDEF' }] }] }]);
++  assert.deepEqual([ok[0].id, ok[0].name, ok[0].semesters[0].id, ok[0].semesters[0].subjects[0].id, ok[0].semesters[0].subjects[0].name, ok[0].semesters[0].subjects[0].color, ok[0].semesters[0].subjects[0].description], ['IS', 'Information Systems', 'sem-abc123', 'DS-1', 'Data Structures', '#abcdef', '']);
++  const bad = (c: unknown, re: RegExp) => assert.throws(() => validateCurriculum(c), (e: Error) => e instanceof InputError && re.test(e.message));
++  bad('x', /Invalid curriculum/);
++  bad([{ id: '1X', name: 'A', semesters: [] }], /Course code/);
++  bad([{ id: 'CS', name: '', semesters: [] }], /Course name is required/);
++  bad([{ id: 'CS', name: 'A', semesters: [] }, { id: 'cs', name: 'B', semesters: [] }], /used twice/);
++  bad([{ id: 'CS', name: 'Same', semesters: [] }, { id: 'IS', name: 'same', semesters: [] }], /two courses named/);
++  const withSubject = (s: object) => [{ id: 'CS', name: 'A', semesters: [{ id: 'sem-1', name: 'S', subjects: [s] }] }];
++  bad(withSubject({ ...subj('x'), id: 'a/b' }), /Subject code/);
++  bad(withSubject({ ...subj('OK1'), icon: 'Nope' }), /icon/);
++  bad(withSubject({ ...subj('OK1'), color: 'red' }), /colour/);
++  bad(withSubject({ ...subj('OK1'), name: 'n'.repeat(81) }), /80 characters/);
++  bad(withSubject({ ...subj('OK1'), description: 'd'.repeat(101) }), /100 characters/);
++  bad([{ id: 'CS', name: 'A', semesters: [{ id: 'sem-1', name: 'S', subjects: [subj('AB'), subj('ab', { name: 'Other' })] }] }], /already used/);
++  bad([{ id: 'CS', name: 'A', semesters: [{ id: 'sem-1', name: 'S', subjects: [subj('AB')] }] }, { id: 'IS', name: 'B', semesters: [{ id: 'sem-2', name: 'S', subjects: [subj('AB', { name: 'Other' })] }] }], /unique across all courses \(for example IS-AB\)/);
++  bad([{ id: 'CS', name: 'A', semesters: [{ id: 'sem-1', name: 'S', subjects: [] }, { id: 'sem-2', name: 's', subjects: [] }] }], /already has a semester named/);
++  bad([{ id: 'CS', name: 'A', semesters: [{ id: 'sem-1', name: 'S', subjects: [] }, { id: 'sem-1', name: 'T', subjects: [] }] }], /appears twice/);
++});
++
++test('limits are enforced', () => {
++  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ id: 'C' + String.fromCharCode(65 + (i % 26)) + Math.floor(i / 26), name: 'Course ' + i, semesters: [] }));
++  assert.equal(validateCurriculum(many(LIMITS.courses)).length, LIMITS.courses);
++  assert.throws(() => validateCurriculum(many(LIMITS.courses + 1)), /up to 10 courses/);
++  const subjects = Array.from({ length: LIMITS.subjectsPerSemester + 1 }, (_, i) => subj('S' + String(i).padStart(2, '0')));
++  assert.throws(() => validateCurriculum([{ id: 'CS', name: 'A', semesters: [{ id: 'sem-1', name: 'S', subjects }] }]), /up to 20 subjects/);
++});
++
++test('parseCurriculum never throws and rejects bad data', () => {
++  assert.deepEqual(parseCurriculum({ version: 2, courses: DEFAULT_COURSES })!.version, 2);
++  for (const junk of [null, 'x', {}, { version: 'a', courses: [] }, { version: 1, courses: [{ id: 'bad' }] }]) assert.equal(parseCurriculum(junk), null);
++});
++
++test('adding a course, semester and subject (the admin workflow) works and validates immediately', () => {
++  let c = base();
++  c = addCourse(c, 'is', 'Information Systems');
++  c = addSemester(c, 'IS', 'Year 2 · Semester 1', 'sem-is21');
++  c = addSubject(c, 'sem-is21', subj('ISDB', { name: 'Database Design' }));
++  assert.deepEqual(termOf(c, 'ISDB')!.course.id, 'IS');
++  assert.equal(allSemesters(c).length, 2);
++  assert.throws(() => addCourse(c, 'IS', 'Another'), /used twice/);
++  assert.throws(() => addSubject(c, 'sem-is21', subj('DBMS')), /already used/, 'a code used by CS cannot be reused in IS');
++  assert.throws(() => addSubject(c, 'sem-is21', subj('X')), /Subject code/);
++  assert.equal(c.courses.length, 2, 'original not mutated by failed adds');
++});
++
++test('rename, move, update and remove helpers are immutable and keep subject codes fixed', () => {
++  const c0 = base(); const c1 = renameCourse(c0, 'CS', 'Computing');
++  assert.equal(c0.courses[0].name, 'Computer Science'); assert.equal(c1.courses[0].name, 'Computing');
++  const c2 = updateSubject(c1, 'FOA', { name: 'Algorithms', color: '#111111', id: 'HACK' } as never);
++  assert.equal(allSubjects(c2).find(s => s.id === 'FOA')!.name, 'Algorithms');
++  assert.ok(!subjectIdsOf(c2).includes('HACK'), 'the code is never changed by an update');
++  const c3 = moveSubject(c2, 'y1s2', 'FOA', 1); assert.deepEqual(subjectIdsOf(c3).slice(0, 2), ['OS', 'FOA']);
++  assert.deepEqual(subjectIdsOf(moveSubject(c3, 'y1s2', 'OOP', 1)), subjectIdsOf(c3), 'moving the last item down does nothing');
++  let c4 = addCourse(c3, 'IS', 'Information Systems'); c4 = moveCourse(c4, 'IS', -1); assert.deepEqual(c4.courses.map(x => x.id), ['IS', 'CS']);
++  c4 = addSemester(c4, 'CS', 'Year 2 · Semester 1', 'sem-b'); c4 = moveSemester(c4, 'CS', 'sem-b', -1); assert.deepEqual(c4.courses[1].semesters.map(s => s.id), ['sem-b', 'y1s2']);
++  c4 = renameSemester(c4, 'sem-b', 'Second year'); assert.equal(c4.courses[1].semesters[0].name, 'Second year');
++  assert.deepEqual(removedSubjectIds(c0.courses, removeSemester(c0, 'y1s2').courses), ['FOA', 'OS', 'IWT', 'DBMS', 'OOP']);
++  assert.deepEqual(removedSubjectIds(c0.courses, removeSubject(c0, 'OS').courses), ['OS']);
++  assert.equal(removedSubjectIds(c0.courses, removeCourse(c0, 'CS').courses).length, 5);
++  assert.deepEqual(removedSubjectIds(c0.courses, moveSubject(c0, 'y1s2', 'OS', 1).courses), [], 'reordering removes nothing');
++});
++
++test('semester picking: the viewed subject wins, then the saved choice, then the first non-empty semester', () => {
++  let c = base(); c = addCourse(c, 'IS', 'Information Systems'); c = addSemester(c, 'IS', 'Year 1 · Semester 1', 'sem-empty'); c = addSemester(c, 'IS', 'Year 2 · Semester 1', 'sem-is'); c = addSubject(c, 'sem-is', subj('ISDB'));
++  assert.equal(pickSemesterId(c), 'y1s2', 'first with subjects');
++  assert.equal(pickSemesterId(c, undefined, 'sem-is'), 'sem-is', 'saved choice');
++  assert.equal(pickSemesterId(c, 'ISDB', 'y1s2'), 'sem-is', 'the subject being viewed wins');
++  assert.equal(pickSemesterId(c, undefined, 'deleted-id'), 'y1s2', 'stale saved choice ignored');
++  assert.equal(pickSemesterId({ version: 1, courses: [] }), '', 'empty curriculum');
++});
++
++test('suggestions: codes from names, avoiding duplicates; next semester name', () => {
++  assert.equal(suggestCode('Information Systems', [], 8), 'IS');
++  assert.equal(suggestCode('Database Management Systems', [], 12), 'DMS');
++  assert.equal(suggestCode('Algorithms', [], 12), 'ALGO');
++  assert.equal(suggestCode('Information Systems', ['IS'], 8), 'IS2');
++  assert.equal(suggestCode('Information Systems', ['IS', 'IS2'], 8), 'IS3');
++  assert.equal(suggestCode('X', [], 8), 'XX');
++  const course = { id: 'CS', name: 'CS', semesters: [] as { id: string; name: string; subjects: [] }[] };
++  assert.equal(suggestSemesterName(course), 'Year 1 · Semester 1');
++  course.semesters.push({ id: 'a', name: 'a', subjects: [] }); assert.equal(suggestSemesterName(course), 'Year 1 · Semester 2');
++  course.semesters.push({ id: 'b', name: 'b', subjects: [] }); assert.equal(suggestSemesterName(course), 'Year 2 · Semester 1');
++  assert.match(newSemesterId(), /^sem-[a-z0-9]{6}$/); assert.equal(newSemesterId(() => 0), 'sem-000000');
++});
+diff --git a/tests/offline.test.ts b/tests/offline.test.ts
+index e57ff50..6ed951f 100644
+--- a/tests/offline.test.ts
++++ b/tests/offline.test.ts
+@@ -2,15 +2,17 @@ import { test, beforeEach } from 'node:test';
+ import assert from 'node:assert/strict';
+ import { APP, FakeCacheStorage } from './fake-caches.ts';
+ import { diffNotes, describeDiff, diffSignature, hasChanges, parseSnapshot, publishedOnly, type SyncNote } from '../lib/sync-model.ts';
+-import { CACHE, applyUpdate, checkPending, loadWorkspaceData, readSnapshot, removeSavedFile, saveFile, savedFileKeys, warmPages, writeSnapshot } from '../lib/offline.ts';
++import { addCourse, defaultCurriculum, type Curriculum } from '../lib/curriculum-model.ts';
++import { CACHE, applyUpdate, checkPending, loadCurriculum, loadWorkspaceData, readCachedCurriculum, writeCachedCurriculum, readSnapshot, removeSavedFile, saveFile, savedFileKeys, warmPages, writeSnapshot } from '../lib/offline.ts';
+ 
+ const g = globalThis as any;
+ const note = (id: string, over: Partial<SyncNote> = {}): SyncNote => ({ id, subject: 'FOA', title: 'Note ' + id, content: 'body', tags: [], published: true, updatedAt: '2026-10-01T00:00:00Z', ...over });
+-const server = { admin: false, notes: [] as SyncNote[], offline: false, notesStatus: 200, calls: [] as string[] };
++const withIS = (version: number): Curriculum => addCourse({ ...defaultCurriculum, version }, 'IS', 'Information Systems');
++const server = { admin: false, notes: [] as SyncNote[], offline: false, notesStatus: 200, calls: [] as string[], curriculum: withIS(3) as Curriculum, curriculumStatus: 200 };
+ let standalone = false;
+ 
+ beforeEach(() => {
+-  Object.assign(server, { admin: false, notes: [], offline: false, notesStatus: 200, calls: [] });
++  Object.assign(server, { admin: false, notes: [], offline: false, notesStatus: 200, calls: [], curriculum: withIS(3), curriculumStatus: 200 });
+   standalone = false;
+   g.caches = new FakeCacheStorage();
+   g.location = { origin: APP, search: '' };
+@@ -20,6 +22,7 @@ beforeEach(() => {
+     server.calls.push(u.pathname + u.search);
+     if (server.offline) throw new TypeError('Failed to fetch');
+     if (u.pathname === '/api/session') return Response.json({ admin: server.admin, configured: true });
++    if (u.pathname === '/api/curriculum') return server.curriculumStatus === 200 ? Response.json(server.curriculum) : Response.json({ error: 'Courses & subjects are unavailable.' }, { status: server.curriculumStatus });
+     if (u.pathname === '/api/notes') return server.notesStatus === 200 ? Response.json(server.admin ? server.notes : server.notes.filter(n => n.published)) : Response.json({ error: 'Database unavailable.' }, { status: server.notesStatus });
+     if (u.pathname === '/api/storage') return u.searchParams.get('id') === 'missing' ? Response.json({ error: 'File not found.' }, { status: 404 }) : new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2]), { headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="a.pdf"' } });
+     if (u.pathname.startsWith('/notes/') || u.pathname.startsWith('/subjects/') || u.pathname === '/') return new Response('<html>shell</html>', { headers: { 'Content-Type': 'text/html' } });
+@@ -148,3 +151,44 @@ test('warming pages skips cached ones, de-duplicates and survives failures', asy
+   server.offline = true;
+   await warmPages(['/subjects/OS']); // must not throw
+ });
++
++test('courses and subjects: taken live, saved for offline, and used when there is no network', async () => {
++  server.notes = [note('a')];
++  const online = await loadWorkspaceData();
++  assert.deepEqual(online.curriculum.courses.map(c => c.id), ['CS', 'IS'], 'new course from the server is shown');
++  assert.equal((await readCachedCurriculum())!.version, 3, 'saved on the device');
++  standalone = true; await writeSnapshot(server.notes); server.offline = true;
++  const offline = await loadWorkspaceData();
++  assert.equal(offline.offline, true);
++  assert.deepEqual(offline.curriculum.courses.map(c => c.id), ['CS', 'IS'], 'offline still shows the courses you saw last');
++});
++
++test('the structure is applied live in the installed app too (only notes are asked about)', async () => {
++  standalone = true; server.notes = [note('a')];
++  await writeSnapshot(server.notes); await writeCachedCurriculum({ ...defaultCurriculum, version: 1 });
++  server.curriculum = withIS(2);
++  const data = await loadWorkspaceData();
++  assert.equal(data.curriculum.version, 2); assert.equal(data.pending, null, 'a new course alone does not trigger the notes prompt');
++});
++
++test('a server problem never breaks the app: saved structure, else the built-in subjects', async () => {
++  server.curriculumStatus = 503; server.notes = [note('a')];
++  assert.equal((await loadWorkspaceData()).curriculum.version, 0, 'nothing saved yet → built-in five subjects');
++  server.curriculumStatus = 200; await loadCurriculum(); server.curriculumStatus = 503;
++  assert.equal((await loadCurriculum()).version, 3, 'now the saved copy is used');
++  assert.equal((await loadWorkspaceData()).notes.length, 1, 'notes still load');
++});
++
++test('a saved structure is never replaced by the built-in default (version 0)', async () => {
++  await writeCachedCurriculum(withIS(5));
++  server.curriculum = { ...defaultCurriculum, version: 0 };            // e.g. the server could not read its table
++  const used = await loadCurriculum();
++  assert.equal(used.version, 5); assert.equal((await readCachedCurriculum())!.version, 5, 'cache untouched');
++  g.caches = new FakeCacheStorage();                                   // but on a brand-new device the default is fine
++  assert.equal((await loadCurriculum()).version, 0);
++});
++
++test('offline with nothing saved yet falls back to the built-in subjects', async () => {
++  standalone = true; await writeSnapshot([note('a')]); server.offline = true;
++  assert.deepEqual((await loadWorkspaceData()).curriculum.courses.map(c => c.id), ['CS']);
++});

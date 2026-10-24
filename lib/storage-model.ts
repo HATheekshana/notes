@@ -4,8 +4,8 @@ export const MAX_FILE_BYTES = 4 * 1024 * 1024; // keeps uploads inside Vercel's 
 export const MAX_DEPTH = 6; // folders nested deeper than this are rejected
 export const MAX_ITEMS_PER_SUBJECT = 1000;
 
-// Safe-to-show validation failures. Anything else is treated as an infrastructure error by the API.
-export class InputError extends Error { code?: string; }
+import { InputError } from './errors.ts';
+export { InputError };
 
 export type StorageItem = {
   id: string;
@@ -19,7 +19,8 @@ export type StorageItem = {
 
 export const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const isUuid = (v: unknown): v is string => typeof v === 'string' && uuidPattern.test(v);
-export const validStorageSubject = (s: string) => ['FOA', 'OS', 'IWT', 'DBMS', 'OOP'].includes(s);
+// Format only (keeps ids safe in URLs and file paths). Whether the subject exists is checked by the API against the curriculum.
+export const validStorageSubject = (s: string) => /^[A-Z0-9][A-Z0-9_-]{1,11}$/.test(s);
 
 // Allowed types. The extension decides the Content-Type we serve, never the browser-supplied one.
 // SVG/HTML are deliberately absent: they can run script when opened.

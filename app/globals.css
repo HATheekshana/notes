@@ -64,3 +64,33 @@
 .spin{animation:rz-spin 1s linear infinite}@keyframes rz-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}}
 .offline-note{font-size:12px;white-space:nowrap}
+
+/* Courses, semesters and subjects */
+.term-picker{width:calc(100% - 24px);margin:2px 12px 10px;padding:9px 10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.term-picker:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.term-label{margin:2px 14px 10px;font-size:12px;color:var(--muted)}
+.nav-empty{margin:4px 14px;font-size:12px;color:var(--muted)}.nav-empty a{color:var(--accent)}
+.cur-course{margin:0 0 22px;padding:16px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+.cur-row{display:flex;align-items:center;gap:6px}
+.cur-row input,.cur-form input{flex:1;min-width:0;padding:9px 12px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font:inherit;font-size:14px}
+.cur-course-head input{font-size:17px;font-weight:700}
+.cur-code{padding:3px 9px;background:var(--accent-soft);color:var(--accent);border-radius:99px;font-size:12px;font-weight:700;margin:0 6px}
+.cur-semester{margin:14px 0 0;padding:14px;background:var(--sidebar);border:1px solid var(--border);border-radius:10px}
+.cur-semester>.cur-row input{font-weight:600}
+.cur-subjects{list-style:none;margin:12px 0 10px;padding:0;display:flex;flex-direction:column;gap:6px}
+.cur-subjects li{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
+.cur-subjects li>div{flex:1;min-width:0}.cur-subjects strong{display:block;font-size:14px;overflow-wrap:anywhere}.cur-subjects li>div>span{font-size:12px;color:var(--muted)}
+.cur-subjects li.cur-none{color:var(--muted);font-size:13px;border-style:dashed;justify-content:center}
+.cur-swatch{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#fff;flex-shrink:0}
+.cur-add{margin-top:6px}
+.cur-form{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px;padding:14px;background:var(--surface);border:1px solid var(--accent);border-radius:10px}
+.cur-form label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;color:var(--muted)}
+.cur-form-row{display:flex;gap:10px;flex-wrap:wrap}.cur-form-row label{min-width:110px}.cur-form-row .grow{flex:1;min-width:200px}
+.cur-pick{display:flex;flex-wrap:wrap;gap:6px;border:0;margin:0;padding:0}.cur-pick legend{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;padding:0}
+.cur-pick button{width:38px;height:38px;display:grid;place-items:center;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer}
+.cur-pick button.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);color:var(--accent)}
+.cur-pick .swatch{width:30px;height:30px;border:2px solid transparent;border-radius:99px}.cur-pick .swatch.on{border-color:var(--text);box-shadow:0 0 0 2px var(--surface) inset}
+.cur-form-actions{display:flex;justify-content:flex-end;gap:10px}.cur-form-actions .primary{margin:0;width:auto;padding:10px 18px}
+.cur-error{margin:0;color:#d64545;font-size:13px}
+.cur-dirty{margin:0 0 14px;padding:10px 14px;background:var(--accent-soft);color:var(--text);border-radius:8px;font-size:13px}
+@media(max-width:600px){.cur-row{flex-wrap:wrap}.cur-subjects li{flex-wrap:wrap}.cur-subjects li>div{flex-basis:calc(100% - 50px)}}

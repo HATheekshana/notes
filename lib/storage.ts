@@ -13,6 +13,7 @@ interface Meta {
   insert(item: StorageItem): Promise<void>;
   rename(subject: string, id: string, name: string): Promise<void>;
   remove(subject: string, ids: string[]): Promise<void>;
+  counts(): Promise<Record<string, number>>;
 }
 
 type Row = { id: string; subject: string; parent_id: string | null; kind: 'folder' | 'file'; name: string; size: number; created_at: string };
@@ -34,6 +35,14 @@ const cloudMeta: Meta = {
     const rows: Row[] = await supabaseRequest(`storage_items?id=eq.${id}&subject=eq.${subject}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ name }) });
     if (!rows[0]) throw new InputError('That item no longer exists.');
   },
+  async counts() {
+    const out: Record<string, number> = {};
+    for (let offset = 0; ; offset += 1000) {
+      const page: { subject: string }[] = await supabaseRequest(`storage_items?select=subject&order=id.asc&limit=1000&offset=${offset}`);
+      for (const r of page) out[r.subject] = (out[r.subject] || 0) + 1;
+      if (page.length < 1000) return out;
+    }
+  },
   async remove(subject, ids) {
     for (let n = 0; n < ids.length; n += 50) await supabaseRequest(`storage_items?subject=eq.${subject}&id=in.(${ids.slice(n, n + 50).join(',')})`, { method: 'DELETE' });
   },
@@ -53,6 +62,7 @@ async function localMeta(): Promise<Meta> {
     insert: async i => { db.prepare('INSERT INTO storage_items VALUES (?,?,?,?,?,?,?)').run(i.id, i.subject, i.parentId, i.kind, i.name, i.size, i.createdAt); },
     rename: async (subject, id, name) => { db.prepare('UPDATE storage_items SET name=? WHERE id=? AND subject=?').run(name, id, subject); },
     remove: async (subject, ids) => { for (const id of ids) db.prepare('DELETE FROM storage_items WHERE id=? AND subject=?').run(id, subject); },
+    counts: async () => Object.fromEntries((db.prepare('SELECT subject, COUNT(*) AS n FROM storage_items GROUP BY subject').all() as unknown as { subject: string; n: number }[]).map(r => [r.subject, Number(r.n)])),
   };
   return sqlite;
 }
@@ -91,6 +101,13 @@ const parentFolder = (items: StorageItem[], parentId: string | null) => {
   if (!path) throw new InputError('That folder no longer exists.');
   return path;
 };
+
+// How many folders/files each subject holds (used to stop a subject with content from being deleted).
+export async function countItems(): Promise<Record<string, number>> {
+  if (cloudConfigured()) return cloudMeta.counts();
+  if (cloudRequired()) throw new Error('Storage is not configured.');
+  return (await localMeta()).counts();
+}
 
 export async function listItems(subject: string) { return (await meta(subject)).list(subject); }
 

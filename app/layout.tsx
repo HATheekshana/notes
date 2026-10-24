@@ -7,7 +7,7 @@ import 'highlight.js/styles/github-dark.css';
 
 export const metadata: Metadata = {
   title: 'RenxZero — Study workspace',
-  description: 'A personal university knowledge base for FOA, OS, IWT, DBMS and OOP.',
+  description: 'A personal university knowledge base, organised by course, semester and subject.',
   icons: { icon: '/favicon.svg', apple: '/icons/apple-touch-icon.png' },
   appleWebApp: { capable: true, title: 'UNINotes', statusBarStyle: 'default' },
 };

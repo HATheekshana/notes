@@ -3,7 +3,7 @@
 begin;
 create table if not exists public.storage_items (
   id uuid primary key,
-  subject text not null check (subject in ('FOA','OS','IWT','DBMS','OOP')),
+  subject text not null check (subject ~ '^[A-Z0-9][A-Z0-9_-]{1,11}$'),
   parent_id uuid references public.storage_items(id) on delete cascade,
   kind text not null check (kind in ('folder','file')),
   name text not null check (length(name) between 1 and 140),

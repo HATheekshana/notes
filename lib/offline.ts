@@ -1,13 +1,15 @@
 // Browser-side offline support for the installable app (PWA).
 // Everything is stored with the standard Cache API, so the service worker (public/sw.js) can read the
 // same data. Cache names here MUST match public/sw.js.
+import { defaultCurriculum, parseCurriculum, type Curriculum } from './curriculum-model.ts';
 import { corePages, diffNotes, describeDiff, hasChanges, noteUrl, parseSnapshot, publishedOnly, type NotesDiff, type Snapshot, type SyncNote } from './sync-model.ts';
 
 export const CACHE = { meta: 'rz-meta', files: 'rz-files', pages: 'rz-pages-v1' } as const;
 export const SNAPSHOT_URL = '/__rz/snapshot.json';
+export const CURRICULUM_URL = '/__rz/curriculum.json';
 
 export type Pending = { diff: NotesDiff; remote: SyncNote[] };
-export type WorkspaceData = { notes: SyncNote[]; admin: boolean; configured: boolean; offline: boolean; pending: Pending | null; savedAt: string | null };
+export type WorkspaceData = { curriculum: Curriculum; notes: SyncNote[]; admin: boolean; configured: boolean; offline: boolean; pending: Pending | null; savedAt: string | null };
 
 class Offline extends Error {}
 const absolute = (path: string) => new URL(path, location.origin).href;
@@ -34,6 +36,29 @@ export async function writeSnapshot(notes: SyncNote[]): Promise<Snapshot> {
   return snapshot;
 }
 
+// ---- the courses / semesters / subjects ----------------------------------------------------------------------
+// Unlike notes, the structure is always taken live when online (it is just the shape of the app) and
+// kept for offline use. It never fails the app: offline or on a server problem the saved copy is used.
+export async function readCachedCurriculum(): Promise<Curriculum | null> {
+  if (!cacheSupported()) return null;
+  try { const hit = await (await caches.open(CACHE.meta)).match(CURRICULUM_URL); return hit ? parseCurriculum(await hit.json()) : null; } catch { return null; }
+}
+export async function writeCachedCurriculum(curriculum: Curriculum) {
+  if (cacheSupported()) await (await caches.open(CACHE.meta)).put(CURRICULUM_URL, new Response(JSON.stringify(curriculum), { headers: { 'Content-Type': 'application/json' } }));
+}
+export async function loadCurriculum(): Promise<Curriculum> {
+  const cached = await readCachedCurriculum();
+  try {
+    const live = parseCurriculum(await getJson('/api/curriculum'));
+    if (live) {
+      if (live.version === 0 && cached && cached.version > 0) return cached; // never replace a saved curriculum with the built-in default
+      await writeCachedCurriculum(live).catch(() => {});
+      return live;
+    }
+  } catch { /* offline or server problem */ }
+  return cached || defaultCurriculum;
+}
+
 // Loads what the workspace shows.
 //  - Browser tab or administrator: always live from the server (and keeps a copy for offline use).
 //  - Installed app, reader: shows the saved copy and, if the server has newer notes, reports them as
@@ -42,29 +67,30 @@ export async function writeSnapshot(notes: SyncNote[]): Promise<Snapshot> {
 export async function loadWorkspaceData(): Promise<WorkspaceData> {
   try {
     const session = await getJson('/api/session');
+    const curriculum = await loadCurriculum();
     const live = !isStandalone() || session.admin;
     if (live) {
       const notes: SyncNote[] = await getJson('/api/notes');
       await writeSnapshot(notes).catch(() => {});
-      return { notes, admin: !!session.admin, configured: session.configured !== false, offline: false, pending: null, savedAt: null };
+      return { curriculum, notes, admin: !!session.admin, configured: session.configured !== false, offline: false, pending: null, savedAt: null };
     }
     const saved = await readSnapshot();
     if (!saved) {
       const remote = publishedOnly(await getJson('/api/notes') as SyncNote[]);
       const first = await writeSnapshot(remote);
-      return { notes: remote, admin: false, configured: session.configured !== false, offline: false, pending: null, savedAt: first.savedAt };
+      return { curriculum, notes: remote, admin: false, configured: session.configured !== false, offline: false, pending: null, savedAt: first.savedAt };
     }
     let pending: Pending | null = null;
     try {
       const remote = publishedOnly(await getJson('/api/notes') as SyncNote[]), diff = diffNotes(saved.notes, remote);
       if (hasChanges(diff)) pending = { diff, remote };
     } catch (e) { if (!(e instanceof Offline)) { /* server hiccup: keep showing saved notes */ } }
-    return { notes: saved.notes, admin: false, configured: session.configured !== false, offline: false, pending, savedAt: saved.savedAt };
+    return { curriculum, notes: saved.notes, admin: false, configured: session.configured !== false, offline: false, pending, savedAt: saved.savedAt };
   } catch (e) {
     if (!(e instanceof Offline)) throw e;
     const saved = await readSnapshot();
     if (!saved) throw Error('You are offline and no notes are saved on this device yet. Open the app once with internet.');
-    return { notes: saved.notes, admin: false, configured: true, offline: true, pending: null, savedAt: saved.savedAt };
+    return { curriculum: await readCachedCurriculum() || defaultCurriculum, notes: saved.notes, admin: false, configured: true, offline: true, pending: null, savedAt: saved.savedAt };
   }
 }
 
@@ -96,7 +122,7 @@ export async function warmPages(urls: string[]) {
   };
   await Promise.all([worker(), worker(), worker()]);
 }
-export const warmNotePages = (notes: SyncNote[]) => warmPages([...corePages, ...notes.map(n => noteUrl(n.id))]);
+export const warmNotePages = (notes: SyncNote[], subjectIds: string[]) => warmPages([...corePages(subjectIds), ...notes.map(n => noteUrl(n.id))]);
 
 // ---- files saved for offline use (only when the user asks) ----------------------------------
 export async function savedFileKeys(): Promise<Set<string>> {

@@ -36,6 +36,5 @@ export function parseSnapshot(raw: unknown): Snapshot | null {
 }
 
 export const noteUrl = (id: string) => '/notes/' + encodeURIComponent(id);
-export const subjectIds = ['FOA', 'OS', 'IWT', 'DBMS', 'OOP'];
-// Pages that must be available offline for navigation to keep working without a network.
-export const corePages = ['/', ...subjectIds.map(s => '/subjects/' + s), ...subjectIds.map(s => '/subjects/' + s + '/storage')];
+// Pages that must be available offline for navigation to keep working without a network (one set per subject in the curriculum).
+export const corePages = (subjectIds: string[]) => ['/', ...subjectIds.map(s => '/subjects/' + s), ...subjectIds.map(s => '/subjects/' + s + '/storage')];

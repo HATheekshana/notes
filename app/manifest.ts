@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: '/',
     name: 'UNINotes',
     short_name: 'UNINotes',
-    description: 'Study notes for FOA, OS, IWT, DBMS and OOP that work offline.',
+    description: 'Your study notes, organised by course, semester and subject, that work offline.',
     start_url: '/',
     scope: '/',
     display: 'standalone',

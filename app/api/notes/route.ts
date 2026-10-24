@@ -1,6 +1,7 @@
 import { isAdmin, sameOrigin } from '@/lib/auth';
 import { repository } from '@/lib/repository';
 import { validateNote } from '@/lib/model';
+import { subjectIds } from '@/lib/curriculum';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const unavailable = () => Response.json({ error: 'Notes are unavailable. Check the database settings and setup.sql in the deployment guide.' }, { status: 503 });
@@ -10,11 +11,12 @@ export async function GET() {
 }
 export async function POST(req: Request) {
   if (!sameOrigin(req) || !await isAdmin()) return Response.json({ error: 'Administrator login required.' }, { status: 401 });
-  let input, note;
+  let input, note, valid: string[];
+  try { valid = await subjectIds(); } catch { return unavailable(); }
   try {
     const raw = await req.text();
     if (raw.length > 120000) throw Error('Note too large.');
-    input = JSON.parse(raw); note = validateNote(input);
+    input = JSON.parse(raw); note = validateNote(input, valid);
     if (input.id !== undefined && (typeof input.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(input.id))) throw Error('Invalid note ID.');
   } catch (e) { return Response.json({ error: e instanceof Error ? e.message : 'Invalid note' }, { status: 400 }); }
   try {

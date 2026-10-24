@@ -1,5 +1,6 @@
 import { isAdmin, sameOrigin } from '@/lib/auth';
 import { createFolder, deleteItem, listItems, readFileItem, renameItem, uploadFile } from '@/lib/storage';
+import { requireSubject } from '@/lib/curriculum';
 import { InputError, MAX_FILE_BYTES, extensionOf, fileTypes, isUuid, validStorageSubject } from '@/lib/storage-model';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,7 +12,8 @@ function failure(e: unknown) {
   if (e instanceof InputError) return Response.json({ error: e.message }, { status: e.code === 'ENOENT' ? 404 : 400 });
   return Response.json({ error: 'Storage unavailable. Check Supabase Storage and run supabase/storage.sql.' }, { status: 503 });
 }
-const subjectOf = (v: unknown) => { const s = String(v || ''); if (!validStorageSubject(s)) throw new InputError('Invalid subject.'); return s; };
+// Format check first (safe in URLs and paths), then the subject must exist in the curriculum.
+const subjectOf = async (v: unknown) => { const s = String(v || ''); if (!validStorageSubject(s)) throw new InputError('Invalid subject.'); return requireSubject(s); };
 const parentOf = (v: unknown) => { if (v === null || v === undefined || v === '') return null; if (!isUuid(v)) throw new InputError('Invalid folder.'); return v; };
 
 // GET ?subject=FOA            -> every folder/file in the subject (the client builds the tree)
@@ -19,7 +21,7 @@ const parentOf = (v: unknown) => { if (v === null || v === undefined || v === ''
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   try {
-    const subject = subjectOf(params.get('subject')), id = params.get('id');
+    const subject = await subjectOf(params.get('subject')), id = params.get('id');
     if (id === null) return Response.json(await listItems(subject), { headers: noStore });
     const { item, bytes, mime } = await readFileItem(subject, id);
     const inline = params.get('view') === '1' && !!fileTypes[extensionOf(item.name)]?.inline;
@@ -42,14 +44,14 @@ export async function POST(req: Request) {
       const form = await req.formData(), file = form.get('file');
       if (!(file instanceof File)) throw new InputError('Choose a file to upload.');
       if (file.size > MAX_FILE_BYTES) throw new InputError('Files must be 4 MB or smaller.');
-      return Response.json(await uploadFile(subjectOf(form.get('subject')), parentOf(form.get('parentId')), file.name, new Uint8Array(await file.arrayBuffer())), { status: 201 });
+      return Response.json(await uploadFile(await subjectOf(form.get('subject')), parentOf(form.get('parentId')), file.name, new Uint8Array(await file.arrayBuffer())), { status: 201 });
     }
     const raw = await req.text();
     if (raw.length > 4096) throw new InputError('Request too large.');
     let body: Record<string, unknown>;
     try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
     if (body.action !== 'folder') throw new InputError('Invalid request.');
-    return Response.json(await createFolder(subjectOf(body.subject), parentOf(body.parentId), body.name), { status: 201 });
+    return Response.json(await createFolder(await subjectOf(body.subject), parentOf(body.parentId), body.name), { status: 201 });
   } catch (e) { return failure(e); }
 }
 
@@ -61,7 +63,7 @@ export async function PATCH(req: Request) {
     if (raw.length > 4096) throw new InputError('Request too large.');
     let body: Record<string, unknown>;
     try { body = JSON.parse(raw); } catch { throw new InputError('Invalid request.'); }
-    await renameItem(subjectOf(body.subject), String(body.id || ''), body.name);
+    await renameItem(await subjectOf(body.subject), String(body.id || ''), body.name);
     return Response.json({ ok: true });
   } catch (e) { return failure(e); }
 }
@@ -70,6 +72,6 @@ export async function PATCH(req: Request) {
 export async function DELETE(req: Request) {
   if (!sameOrigin(req) || !await isAdmin()) return denied();
   const params = new URL(req.url).searchParams;
-  try { await deleteItem(subjectOf(params.get('subject')), params.get('id') || ''); return Response.json({ ok: true }); }
+  try { await deleteItem(await subjectOf(params.get('subject')), params.get('id') || ''); return Response.json({ ok: true }); }
   catch (e) { return failure(e); }
 }
