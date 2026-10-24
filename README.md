@@ -95,7 +95,7 @@ Already implemented. Follow DEPLOY-VERCEL.md to create the database and configur
 
 ## Security scope
 
-This is a single-administrator first version. Mutations check a signed HttpOnly, SameSite cookie and request origin. Login uses a shared PostgreSQL attempt limit in cloud mode and a process-local limit in local mode, sessions expire after eight hours, and changing the password invalidates existing sessions. Logout clears the browser cookie; it is not centralized session revocation. For public multi-user use, add managed identity, per-user rate limiting, audit logs and recovery. Serve over HTTPS; session cookies are marked Secure on HTTPS requests. Reverse proxies must preserve the external request origin correctly.
+This is a single-administrator first version. Mutations check a signed HttpOnly, SameSite cookie and request origin. Login uses a shared PostgreSQL attempt limit in cloud mode and a process-local limit in local mode, sessions persist for 30 days, and changing the password invalidates existing sessions. Logout clears the browser cookie; it is not centralized session revocation. For public multi-user use, add managed identity, per-user rate limiting, audit logs and recovery. Serve over HTTPS; session cookies are marked Secure on HTTPS requests. Reverse proxies must preserve the external request origin correctly.
 
 ## Verification
 
@@ -120,5 +120,4 @@ node tests/browser.mjs
 ```
 
 Fonts use Google Fonts with local sans-serif fallbacks. All core note functionality works without fetching fonts. SQLite may emit an experimental API warning on supported Node releases.
-
 
