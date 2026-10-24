@@ -66,8 +66,7 @@ export async function loadCurriculum(): Promise<Curriculum> {
 //  - No network: shows the saved copy.
 export async function loadWorkspaceData(): Promise<WorkspaceData> {
   try {
-    const session = await getJson('/api/session');
-    const curriculum = await loadCurriculum();
+    const [session, curriculum] = await Promise.all([getJson('/api/session'), loadCurriculum()]);
     const live = !isStandalone() || session.admin;
     if (live) {
       const notes: SyncNote[] = await getJson('/api/notes');
