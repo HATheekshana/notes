@@ -58,6 +58,30 @@ test('browser tab: always live, and keeps a published-only offline copy', async 
   assert.deepEqual((await readSnapshot())!.notes.map(n => n.id), ['a'], 'drafts are never saved to the device');
 });
 
+test('workspace starts session, curriculum and notes requests concurrently', async () => {
+  const originalFetch = g.fetch;
+  let releaseNotes!: (response: Response) => void;
+  const delayedNotes = new Promise<Response>(resolve => { releaseNotes = resolve; });
+  const calls: string[] = [];
+  g.fetch = (input: any) => {
+    const path = new URL(typeof input === 'string' ? input : input.url, APP).pathname;
+    calls.push(path);
+    if (path === '/api/notes') return delayedNotes;
+    if (path === '/api/session') return Promise.resolve(Response.json({ admin: false, configured: true }));
+    if (path === '/api/curriculum') return Promise.resolve(Response.json(server.curriculum));
+    throw Error('Unexpected request: ' + path);
+  };
+  try {
+    const loading = loadWorkspaceData();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(calls.sort(), ['/api/curriculum', '/api/notes', '/api/session']);
+    releaseNotes(Response.json([note('a')]));
+    assert.equal((await loading).notes.length, 1);
+  } finally {
+    g.fetch = originalFetch;
+  }
+});
+
 test('installed app, first run: saves notes, nothing to ask about', async () => {
   standalone = true; server.notes = [note('a'), note('b')];
   const data = await loadWorkspaceData();

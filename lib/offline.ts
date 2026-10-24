@@ -47,16 +47,17 @@ export async function writeCachedCurriculum(curriculum: Curriculum) {
   if (cacheSupported()) await (await caches.open(CACHE.meta)).put(CURRICULUM_URL, new Response(JSON.stringify(curriculum), { headers: { 'Content-Type': 'application/json' } }));
 }
 export async function loadCurriculum(): Promise<Curriculum> {
-  const cached = await readCachedCurriculum();
+  const cached = readCachedCurriculum();
   try {
-    const live = parseCurriculum(await getJson('/api/curriculum'));
+    const [saved, response] = await Promise.all([cached, getJson('/api/curriculum')]);
+    const live = parseCurriculum(response);
     if (live) {
-      if (live.version === 0 && cached && cached.version > 0) return cached; // never replace a saved curriculum with the built-in default
+      if (live.version === 0 && saved && saved.version > 0) return saved; // never replace a saved curriculum with the built-in default
       await writeCachedCurriculum(live).catch(() => {});
       return live;
     }
   } catch { /* offline or server problem */ }
-  return cached || defaultCurriculum;
+  return await cached || defaultCurriculum;
 }
 
 // Loads what the workspace shows.
@@ -65,23 +66,31 @@ export async function loadCurriculum(): Promise<Curriculum> {
 //    `pending` so the app can ASK before updating.
 //  - No network: shows the saved copy.
 export async function loadWorkspaceData(): Promise<WorkspaceData> {
+  const notesRequest = getJson('/api/notes').then(
+    value => ({ value }),
+    error => ({ error }),
+  );
   try {
     const [session, curriculum] = await Promise.all([getJson('/api/session'), loadCurriculum()]);
+    const notesResult = await notesRequest;
     const live = !isStandalone() || session.admin;
     if (live) {
-      const notes: SyncNote[] = await getJson('/api/notes');
+      if ('error' in notesResult) throw notesResult.error;
+      const notes: SyncNote[] = notesResult.value;
       await writeSnapshot(notes).catch(() => {});
       return { curriculum, notes, admin: !!session.admin, configured: session.configured !== false, offline: false, pending: null, savedAt: null };
     }
     const saved = await readSnapshot();
     if (!saved) {
-      const remote = publishedOnly(await getJson('/api/notes') as SyncNote[]);
+      if ('error' in notesResult) throw notesResult.error;
+      const remote = publishedOnly(notesResult.value as SyncNote[]);
       const first = await writeSnapshot(remote);
       return { curriculum, notes: remote, admin: false, configured: session.configured !== false, offline: false, pending: null, savedAt: first.savedAt };
     }
     let pending: Pending | null = null;
     try {
-      const remote = publishedOnly(await getJson('/api/notes') as SyncNote[]), diff = diffNotes(saved.notes, remote);
+      if ('error' in notesResult) throw notesResult.error;
+      const remote = publishedOnly(notesResult.value as SyncNote[]), diff = diffNotes(saved.notes, remote);
       if (hasChanges(diff)) pending = { diff, remote };
     } catch (e) { if (!(e instanceof Offline)) { /* server hiccup: keep showing saved notes */ } }
     return { curriculum, notes: saved.notes, admin: false, configured: session.configured !== false, offline: false, pending, savedAt: saved.savedAt };
