@@ -78,18 +78,17 @@ async function savedFileFirst(request) {
 const offlinePage = () => new Response('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Offline</title><body style="font-family:system-ui;padding:2rem;max-width:30rem;margin:auto"><h1>You are offline</h1><p>This page has not been saved yet. Connect to the internet once to open it, then it will work offline.</p>', { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 const pageKey = url => { const u = new URL(url); u.search = ''; return u.href; };
 
-// Pages: live when the network is healthy (so deploys show up), the saved copy when offline or very slow.
+// Pages: always use the live response when online; cached pages are an offline fallback.
 async function navigate(event) {
   const request = event.request, cache = await caches.open(PAGES), key = pageKey(request.url);
   const cached = (await cache.match(key)) || (await cache.match(pageKey(self.location.origin + '/')));
-  const network = fetch(request).then(async response => {
+  try {
+    const response = await fetch(request);
     if (response.ok && !response.redirected && (response.headers.get('Content-Type') || '').includes('text/html')) await cache.put(key, response.clone());
     return response;
-  });
-  if (!cached) return network.catch(offlinePage);
-  event.waitUntil(network.catch(() => {})); // let a slow request finish and refresh the cache
-  const slow = new Promise(resolve => setTimeout(() => resolve(cached), 3500));
-  return Promise.race([network, slow]).catch(() => cached);
+  } catch {
+    return cached || offlinePage();
+  }
 }
 
 // ---- update checks (never applies anything) ----------------------------------------------------------

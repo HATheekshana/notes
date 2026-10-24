@@ -115,13 +115,12 @@ test('pages: fresh online, saved copy offline, shell as fallback, and a friendly
   assert.equal(last!.status, 503); assert.match(await last!.text(), /You are offline/);
 });
 
-test('pages: a very slow network serves the saved copy instead of hanging', async () => {
+test('pages: a slow network waits for fresh content instead of showing a stale page', async () => {
   const sw = boot(async r => new Response('<html>fresh</html>', { headers: { 'Content-Type': 'text/html' } }));
   await fetchVia(sw, nav('/subjects/OS'));
-  sw.env.fetch = () => new Promise(resolve => setTimeout(() => resolve(new Response('<html>fresh2</html>', { headers: { 'Content-Type': 'text/html' } })), 400));
-  assert.equal(await (await fetchVia(sw, nav('/subjects/OS')))!.text(), '<html>fresh</html>', 'saved copy shown after the timeout');
-  await new Promise(r => setTimeout(r, 450));
-  assert.equal(await (await (await sw.caches.open('rz-pages-v1')).match('/subjects/OS'))!.text(), '<html>fresh2</html>', 'cache refreshed in the background');
+  sw.env.fetch = () => new Promise(resolve => setTimeout(() => resolve(new Response('<html>fresh2</html>', { headers: { 'Content-Type': 'text/html' } })), 40));
+  assert.equal(await (await fetchVia(sw, nav('/subjects/OS')))!.text(), '<html>fresh2</html>', 'fresh page shown after the network responds');
+  assert.equal(await (await (await sw.caches.open('rz-pages-v1')).match('/subjects/OS'))!.text(), '<html>fresh2</html>', 'fresh page replaces the cached copy');
 });
 
 test('pages: redirects and non-HTML are not saved as pages', async () => {

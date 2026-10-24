@@ -64,6 +64,11 @@
 .spin{animation:rz-spin 1s linear infinite}@keyframes rz-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}}
 .offline-note{font-size:12px;white-space:nowrap}
+.workspace-loading{min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center;color:var(--muted)}
+.workspace-loading p{margin:14px 0 0}
+.workspace-loading .secondary{margin-top:16px}
+.workspace-spinner{display:block;width:32px;height:32px;margin:auto;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:rz-spin .8s linear infinite}
+@media(prefers-reduced-motion:reduce){.workspace-spinner{animation:none}}
 
 /* Courses, semesters and subjects */
 .term-picker{width:calc(100% - 24px);margin:2px 12px 10px;padding:9px 10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
