@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 
 export default function AnimatedCursor() {
   const robot = useRef<HTMLSpanElement>(null);
+  const headphones = useRef<HTMLSpanElement>(null);
   const actionTimeout = useRef<number | null>(null);
   const movementTimeout = useRef<number | null>(null);
   const lastPosition = useRef<{ x: number; y: number } | null>(null);
@@ -26,6 +27,8 @@ export default function AnimatedCursor() {
       root.dataset.cursorVisible = 'true';
       robot.current?.style.setProperty('left', `${event.clientX}px`);
       robot.current?.style.setProperty('top', `${event.clientY}px`);
+      headphones.current?.style.setProperty('left', `${event.clientX}px`);
+      headphones.current?.style.setProperty('top', `${event.clientY}px`);
 
       const previous = lastPosition.current;
       if (previous) {
@@ -34,16 +37,12 @@ export default function AnimatedCursor() {
         const tilt = Math.max(-18, Math.min(18, dx * 0.9));
         const bob = Math.max(-4, Math.min(4, dy * 0.35));
         robot.current?.style.setProperty('--robot-tilt', `${tilt * 0.45}deg`);
-        robot.current?.style.setProperty('--headphone-left-sway', `${-tilt}deg`);
-        robot.current?.style.setProperty('--headphone-right-sway', `${tilt}deg`);
-        robot.current?.style.setProperty('--headphone-bob', `${bob}px`);
+        headphones.current?.style.setProperty('--headphone-bob', `${bob}px`);
         root.dataset.cursorMotion = 'move';
         if (movementTimeout.current !== null) window.clearTimeout(movementTimeout.current);
         movementTimeout.current = window.setTimeout(() => {
           delete root.dataset.cursorMotion;
           robot.current?.style.setProperty('--robot-tilt', '0deg');
-          robot.current?.style.setProperty('--headphone-left-sway', '0deg');
-          robot.current?.style.setProperty('--headphone-right-sway', '0deg');
           robot.current?.style.setProperty('--headphone-bob', '0px');
         }, 130);
       }
@@ -110,6 +109,11 @@ export default function AnimatedCursor() {
 
   return (
     <span className="animated-cursor" aria-hidden="true">
+      <span className="animated-cursor__headphones" ref={headphones}>
+        <span className="animated-cursor__headband" />
+        <span className="animated-cursor__cup animated-cursor__cup--left" />
+        <span className="animated-cursor__cup animated-cursor__cup--right" />
+      </span>
       <span className="animated-cursor__robot" ref={robot}>
         <span className="animated-cursor__antenna" />
         <span className="animated-cursor__head">
@@ -117,8 +121,6 @@ export default function AnimatedCursor() {
           <span className="animated-cursor__eye" />
           <span className="animated-cursor__mouth" />
         </span>
-        <span className="animated-cursor__ear animated-cursor__ear--left" />
-        <span className="animated-cursor__ear animated-cursor__ear--right" />
       </span>
     </span>
   );
