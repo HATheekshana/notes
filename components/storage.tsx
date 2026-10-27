@@ -24,6 +24,18 @@ function send(file: File, subject: string, parentId: string | null, holder: { cu
     x.send(form);
   });
 }
+function sendSigned(file: File, url: string, holder: { current: XMLHttpRequest | null }, onProgress: (fraction: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const x = new XMLHttpRequest(); holder.current = x;
+    x.open('PUT', url); x.setRequestHeader('x-upsert', 'false');
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = () => { let d: { message?: string } = {}; try { d = JSON.parse(x.responseText); } catch { /* non-JSON storage error */ } if (x.status >= 200 && x.status < 300) resolve(); else reject(Error(d.message || 'PDF upload failed. Check Supabase Storage settings.')); };
+    x.onerror = () => reject(Error('Network error. Check your connection.'));
+    x.onabort = () => reject(Error('cancelled'));
+    const form = new FormData(); form.set('cacheControl', '3600'); form.append('', file);
+    x.send(form);
+  });
+}
 const base = (subject: string) => '/subjects/' + subject + '/storage';
 const icon = (item: StorageItem) => {
   if (item.kind === 'folder') return <Folder size={20} />;
@@ -82,7 +94,18 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
       if (!queueRef.current.some(x => x.key === q.key)) continue; // removed while waiting
       patch(q.key, { state: 'uploading', progress: 0 });
       try {
-        await send(q.file, subject, parentId, xhr, f => patch(q.key, { progress: f, state: f >= 1 ? 'saving' : 'uploading' }));
+        const progress = (f: number) => patch(q.key, { progress: f, state: f >= 1 ? 'saving' : 'uploading' });
+        if (extensionOf(q.file.name) === 'pdf' && q.file.size > MAX_FILE_BYTES) {
+          const prepared = await json(await fetch('/api/storage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'prepare-upload', subject, parentId, name: q.file.name, size: q.file.size }) }));
+          if (prepared.direct) {
+            await sendSigned(q.file, prepared.signedUrl, xhr, progress);
+            await json(await fetch('/api/storage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'complete-upload', subject, parentId, id: prepared.id, name: q.file.name, size: q.file.size }) }));
+          } else {
+            await send(q.file, subject, parentId, xhr, progress);
+          }
+        } else {
+          await send(q.file, subject, parentId, xhr, progress);
+        }
         ok++; patch(q.key, { state: 'done', progress: 1 }); setFinishedBytes(n => n + q.file.size);
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Upload failed.';
@@ -143,7 +166,7 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
     </nav>
 
     {!admin && <p className="resource-hint muted">Anyone can view and download. <Link className="text-button inline" href="/admin">Sign in to manage files</Link></p>}
-    {admin && <p className="resource-hint muted">PDF, images, Office files, text, CSV or ZIP · Up to 4 MB each · Visible to all readers</p>}
+    {admin && <p className="resource-hint muted">PDF, images, Office files, text, CSV or ZIP · PDFs up to 50 MB; other files up to 4 MB · Visible to all readers</p>}
 
     {error && <div className="banner error" role="alert"><span>{error}</span><button className="text-button" onClick={() => { setError(''); setLoading(true); load().catch(e => setError(e.message)).finally(() => setLoading(false)); }}>Retry</button></div>}
     {files.error && <div className="banner error" role="alert"><span>{files.error}</span></div>}
@@ -195,7 +218,9 @@ export default function Storage({ subject, subjectName, folderId, admin }: { sub
               {f.inline && <a className="secondary" href={f.view} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Open</a>}
               {(online || !f.inline) && <a className="secondary" href={f.plain} download={item.name}><Download size={16} />Download</a>}
             </> : <span className="muted offline-note">Needs internet</span>}
-            <SaveOffline path={f.key} name={item.name} files={files} disabled={!online} />
+            {item.size <= MAX_FILE_BYTES || files.isSaved(f.key)
+              ? <SaveOffline path={f.key} name={item.name} files={files} disabled={!online} />
+              : <span className="muted offline-note">Too large for offline</span>}
           </>; })()}
           {renaming !== item.id && item.kind === 'folder' && <Link className="secondary" href={base(subject) + '/' + item.id}>Open<ChevronRight size={16} /></Link>}
           {admin && renaming !== item.id && <>

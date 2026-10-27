@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { cloudConfigured, cloudRequired, supabaseRequest } from './supabase-repository.ts';
-import { InputError, MAX_DEPTH, MAX_ITEMS_PER_SUBJECT, descendants, isUuid, trail, uniqueName, validFileRename, validFolderName, validStorageSubject, validateFile, typeOf, type StorageItem } from './storage-model.ts';
+import { InputError, MAX_DEPTH, MAX_FILE_BYTES, MAX_PDF_BYTES, MAX_ITEMS_PER_SUBJECT, cleanFileName, descendants, extensionOf, isUuid, maxFileBytes, trail, uniqueName, validFileRename, validFolderName, validStorageSubject, validateFile, typeOf, type StorageItem } from './storage-model.ts';
 
 const bucket = 'subject-storage';
 const setupError = 'Storage unavailable. Run supabase/storage.sql and check Supabase Storage.';
@@ -130,6 +130,68 @@ export async function uploadFile(subject: string, parentId: string | null, rawNa
   await putBytes(subject, item.id, mime, bytes); // bytes first: a failed insert leaves an orphan, never a broken row
   try { await db.insert(item); } catch (e) { await dropBytes(subject, [item.id]).catch(() => {}); throw e; }
   return item;
+}
+
+export async function prepareFileUpload(subject: string, parentId: string | null, rawName: string, size: number) {
+  const name = cleanFileName(rawName);
+  if (!typeOf(name)) throw new InputError('This file type is not supported.');
+  if (!Number.isSafeInteger(size) || size <= 0) throw new InputError('File is empty or has an invalid size.');
+  if (size > maxFileBytes(name)) throw new InputError(extensionOf(name) === 'pdf' ? 'PDFs must be 50 MB or smaller.' : 'Files must be 4 MB or smaller.');
+  if (extensionOf(name) !== 'pdf' || size <= MAX_FILE_BYTES || !cloudConfigured()) return null;
+
+  const db = await meta(subject), items = await db.list(subject);
+  parentFolder(items, parentId);
+  if (items.length >= MAX_ITEMS_PER_SUBJECT) throw new InputError('This subject has reached its storage item limit.');
+  const id = randomUUID();
+  const origin = new URL(process.env.SUPABASE_URL!);
+  const response = await objects(`object/upload/sign/${bucket}/${subject}/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const data = await response.json() as { url?: string };
+  if (typeof data.url !== 'string') throw Error('Could not prepare the PDF upload.');
+  const signedUrl = new URL(`${origin.origin}/storage/v1${data.url.startsWith('/') ? data.url : '/' + data.url}`);
+  if (signedUrl.origin !== origin.origin) throw Error('Could not prepare the PDF upload.');
+  return { id, name: uniqueName(name, items.filter(i => i.parentId === parentId && i.kind === 'file')), signedUrl: signedUrl.toString() };
+}
+
+export async function completeFileUpload(subject: string, parentId: string | null, id: string, rawName: string, size: number): Promise<StorageItem> {
+  if (!isUuid(id)) throw new InputError('Invalid file.');
+  const name = cleanFileName(rawName);
+  if (extensionOf(name) !== 'pdf' || !Number.isSafeInteger(size) || size <= MAX_FILE_BYTES || size > MAX_PDF_BYTES) throw new InputError('Invalid PDF upload.');
+  const db = await meta(subject), items = await db.list(subject);
+  parentFolder(items, parentId);
+  if (items.some(i => i.id === id)) throw new InputError('This file has already been uploaded.');
+  if (items.length >= MAX_ITEMS_PER_SUBJECT) throw new InputError('This subject has reached its storage item limit.');
+
+  const response = await objects(`object/${bucket}/${subject}/${id}`, { headers: { Range: 'bytes=0-4' } });
+  const reader = response.body?.getReader();
+  if (!reader) throw new InputError('The uploaded PDF could not be verified.');
+  const { value } = await reader.read();
+  await reader.cancel();
+  if (!value || value.length < 5 || new TextDecoder().decode(value.slice(0, 5)) !== '%PDF-') {
+    await dropBytes(subject, [id]);
+    throw new InputError('This file is not a valid PDF.');
+  }
+  const range = response.headers.get('content-range');
+  const actualSize = range && Number(range.slice(range.lastIndexOf('/') + 1));
+  if (!actualSize || actualSize !== size) {
+    await dropBytes(subject, [id]);
+    throw new InputError('The uploaded PDF size could not be verified.');
+  }
+
+  const item: StorageItem = { id, subject, parentId, kind: 'file', name: uniqueName(name, items.filter(i => i.parentId === parentId && i.kind === 'file')), size, createdAt: new Date().toISOString() };
+  try { await db.insert(item); } catch (e) { await dropBytes(subject, [id]).catch(() => {}); throw e; }
+  return item;
+}
+
+export async function signedFileDownload(subject: string, id: string, name: string) {
+  if (!validStorageSubject(subject) || !isUuid(id)) throw new InputError('Invalid file.');
+  const origin = new URL(process.env.SUPABASE_URL!);
+  const response = await objects(`object/sign/${bucket}/${subject}/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 60 }) });
+  const data = await response.json() as { signedURL?: string };
+  if (typeof data.signedURL !== 'string') throw Error('Could not prepare the file download.');
+  const signedUrl = new URL(`${origin.origin}/storage/v1${data.signedURL.startsWith('/') ? data.signedURL : '/' + data.signedURL}`);
+  if (signedUrl.origin !== origin.origin) throw Error('Could not prepare the file download.');
+  signedUrl.searchParams.set('download', name);
+  return signedUrl.toString();
 }
 
 export async function renameItem(subject: string, id: string, rawName: unknown): Promise<void> {

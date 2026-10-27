@@ -1,6 +1,7 @@
 // Pure helpers for the per-subject Storage section (folders + files).
 // No I/O here so the rules can be unit tested and shared with the browser.
 export const MAX_FILE_BYTES = 4 * 1024 * 1024; // keeps uploads inside Vercel's request body limit
+export const MAX_PDF_BYTES = 50 * 1024 * 1024;
 export const MAX_DEPTH = 6; // folders nested deeper than this are rejected
 export const MAX_ITEMS_PER_SUBJECT = 1000;
 
@@ -49,6 +50,7 @@ export const allowedMimeTypes = [...new Set(Object.values(fileTypes).map(t => t.
 export const acceptAttribute = Object.keys(fileTypes).map(e => '.' + e).join(',');
 export const extensionOf = (name: string) => (/\.([A-Za-z0-9]{1,5})$/.exec(name)?.[1] || '').toLowerCase();
 export const typeOf = (name: string): FileType | undefined => fileTypes[extensionOf(name)];
+export const maxFileBytes = (name: string) => extensionOf(cleanFileName(name)) === 'pdf' ? MAX_PDF_BYTES : MAX_FILE_BYTES;
 
 const control = /[\u0000-\u001f\u007f]/;
 const forbidden = /[\\/:*?"<>|]/; // no /g: .test() on a global regex is stateful
@@ -84,7 +86,7 @@ export function validateFile(name: string, bytes: Uint8Array): { name: string; m
   const type = typeOf(clean);
   if (!type) throw new InputError('This file type is not supported. Allowed: PDF, images, Office files, text, CSV and ZIP.');
   if (!bytes.length) throw new InputError('This file is empty.');
-  if (bytes.length > MAX_FILE_BYTES) throw new InputError('Files must be 4 MB or smaller.');
+  if (bytes.length > maxFileBytes(clean)) throw new InputError(extensionOf(clean) === 'pdf' ? 'PDFs must be 50 MB or smaller.' : 'Files must be 4 MB or smaller.');
   if (type.sig && !type.sig.some(s => s.every((b, i) => bytes[i] === b))) throw new InputError('This file does not match its extension.');
   if (type.text && bytes.subarray(0, 4096).includes(0)) throw new InputError('This file does not look like text.');
   return { name: clean, mime: type.mime };
@@ -94,7 +96,7 @@ export function validateFile(name: string, bytes: Uint8Array): { name: string; m
 export function precheckFile(name: string, size: number): string {
   if (!typeOf(cleanFileName(name))) return 'Unsupported file type';
   if (!size) return 'File is empty';
-  if (size > MAX_FILE_BYTES) return 'Larger than 4 MB';
+  if (size > maxFileBytes(name)) return extensionOf(cleanFileName(name)) === 'pdf' ? 'Larger than 50 MB' : 'Larger than 4 MB';
   return '';
 }
 

@@ -1,4 +1,4 @@
-export const MAX_PDF_BYTES = 4 * 1024 * 1024;
+export const MAX_PDF_BYTES = 50 * 1024 * 1024;
 export type Resource = { key: string; name: string; size: number; createdAt: string };
 // Format only; the API checks that the subject exists in the curriculum.
 export function validSubject(subject: string) { return /^[A-Z0-9][A-Z0-9_-]{1,11}$/.test(subject); }
@@ -8,6 +8,6 @@ export function safePdfName(name: string) {
 }
 export function validatePdf(name: string, bytes: Uint8Array) {
   if (!/\.pdf$/i.test(name)) throw Error('Choose a PDF file.');
-  if (bytes.length > MAX_PDF_BYTES) throw Error('PDFs must be 4 MB or smaller.');
+  if (bytes.length > MAX_PDF_BYTES) throw Error('PDFs must be 50 MB or smaller.');
   if (bytes.length < 5 || new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') throw Error('This file is not a valid PDF.');
 }

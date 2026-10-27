@@ -32,7 +32,7 @@ The default scripts bind to the local machine. To expose a hosted instance, conf
 ## Included
 
 - Publish-success notification with **Back to notes** and **New note** actions.
-- Subject PDF libraries with admin upload/delete and reader downloads (4 MB per PDF). Run `supabase/resources.sql` for cloud storage; see [UPDATE-RESOURCES.md](UPDATE-RESOURCES.md) for an existing deployment.
+- Subject PDF libraries with admin upload/delete and reader downloads (up to 50 MB per PDF). Run `supabase/resources.sql` for cloud storage; see [UPDATE-RESOURCES.md](UPDATE-RESOURCES.md) for an existing deployment.
 
 - **Courses, semesters and subjects are managed in the app** (Manage → Courses & subjects): add a course such as IS, add semesters, add subjects. Readers pick their semester in the sidebar. Run `supabase/curriculum.sql` once; see [UPDATE-CURRICULUM.md](UPDATE-CURRICULUM.md).
 - **Installable offline app (PWA):** install from Chrome on Android, read notes offline, get asked before notes update, and save PDFs/files for offline use on request. See [UPDATE-PWA.md](UPDATE-PWA.md).
@@ -120,4 +120,3 @@ node tests/browser.mjs
 ```
 
 Fonts use Google Fonts with local sans-serif fallbacks. All core note functionality works without fetching fonts. SQLite may emit an experimental API warning on supported Node releases.
-

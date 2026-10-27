@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { InputError, MAX_FILE_BYTES, cleanFileName, precheckFile, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
+import { InputError, MAX_FILE_BYTES, MAX_PDF_BYTES, cleanFileName, precheckFile, descendants, trail, uniqueName, validFileRename, validFolderName, validateFile, type StorageItem } from '../lib/storage-model.ts';
 
 const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF');
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
@@ -24,7 +24,10 @@ test('file validation checks extension, signature, size and text content', () =>
   assert.throws(() => validateFile('evil.html', pdf), /not supported/);
   assert.throws(() => validateFile('evil.svg', pdf), /not supported/);
   assert.throws(() => validateFile('fake.pdf', new TextEncoder().encode('<html>')), /does not match/);
-  assert.throws(() => validateFile('big.pdf', new Uint8Array(MAX_FILE_BYTES + 1)), /4 MB/);
+  assert.throws(() => validateFile('big.pdf', new Uint8Array(MAX_PDF_BYTES + 1)), /50 MB/);
+  const largePdf = new Uint8Array(MAX_FILE_BYTES + 1); largePdf.set(new TextEncoder().encode('%PDF-'));
+  assert.equal(validateFile('large.pdf', largePdf).mime, 'application/pdf');
+  assert.throws(() => validateFile('big.txt', new Uint8Array(MAX_FILE_BYTES + 1)), /4 MB/);
   assert.throws(() => validateFile('empty.pdf', new Uint8Array(0)), /empty/);
   assert.throws(() => validateFile('bin.txt', new Uint8Array([65, 0, 66])), /text/);
   assert.equal(validateFile('notes.txt', new TextEncoder().encode('hello')).mime, 'text/plain');
@@ -44,8 +47,9 @@ test('precheck flags unsupported, empty and oversized files before upload', () =
   assert.match(precheckFile('a.exe', 100), /Unsupported/);
   assert.match(precheckFile('a.html', 100), /Unsupported/);
   assert.match(precheckFile('a.pdf', 0), /empty/);
-  assert.match(precheckFile('a.pdf', MAX_FILE_BYTES + 1), /4 MB/);
-  assert.equal(precheckFile('a.pdf', MAX_FILE_BYTES), '');
+  assert.equal(precheckFile('a.pdf', MAX_FILE_BYTES + 1), '');
+  assert.match(precheckFile('a.pdf', MAX_PDF_BYTES + 1), /50 MB/);
+  assert.match(precheckFile('a.txt', MAX_FILE_BYTES + 1), /4 MB/);
 });
 
 test('tree helpers: descendants, trail, unique names', () => {
@@ -127,5 +131,34 @@ test('cloud backend uses private server credentials, scoped paths and the Prefer
     assert.deepEqual(JSON.parse(drop.init.body as string), { prefixes: ['DBMS/' + file.id] });
     globalThis.fetch = (async () => new Response('secret internal details', { status: 500 })) as typeof fetch;
     await assert.rejects(() => s.listItems('DBMS'), (e: Error) => !(e instanceof InputError) && !/secret internal/.test(e.message));
+  } finally { globalThis.fetch = originalFetch; process.env = env; }
+});
+
+test('large cloud PDFs use signed uploads and are verified before metadata is saved', async () => {
+  const originalFetch = globalThis.fetch, env = { ...process.env };
+  process.env.SUPABASE_URL = 'https://example.supabase.co'; process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
+  const rows: Record<string, unknown>[] = [];
+  globalThis.fetch = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    const u = String(url), method = init.method || 'GET';
+    if (u.includes('/rest/v1/storage_items')) {
+      if (method === 'POST') { const row = JSON.parse(init.body as string); rows.push(row); return Response.json([row], { status: 201 }); }
+      return Response.json(rows);
+    }
+    if (u.includes('/object/upload/sign/')) return Response.json({ url: u.slice(u.indexOf('/object/upload/sign/')) + '?token=temporary' });
+    if (u.includes('/object/subject-storage/OS/')) return new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]), { status: 206, headers: { 'content-range': `bytes 0-4/${MAX_PDF_BYTES}` } });
+    if (u.includes('/object/sign/subject-storage/OS/')) return Response.json({ signedURL: '/object/sign/subject-storage/OS/file.pdf?token=temporary' });
+    throw Error('Unexpected storage request');
+  }) as typeof fetch;
+  try {
+    const specifier = '../lib/storage.ts?large-pdf';
+    const s = await import(specifier) as typeof import('../lib/storage.ts');
+    const prepared = await s.prepareFileUpload('OS', null, 'large.pdf', MAX_PDF_BYTES);
+    assert.ok(prepared);
+    assert.ok(prepared.signedUrl.startsWith('https://example.supabase.co/storage/v1/object/upload/sign/'));
+    const item = await s.completeFileUpload('OS', null, prepared.id, 'large.pdf', MAX_PDF_BYTES);
+    assert.equal(item.size, MAX_PDF_BYTES);
+    assert.equal(rows.length, 1);
+    const download = await s.signedFileDownload('OS', item.id, item.name);
+    assert.equal(new URL(download).searchParams.get('download'), 'large.pdf');
   } finally { globalThis.fetch = originalFetch; process.env = env; }
 });
