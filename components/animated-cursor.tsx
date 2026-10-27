@@ -44,20 +44,10 @@ export default function AnimatedCursor() {
       lastPosition.current = { x: event.clientX, y: event.clientY };
 
       const target = event.target;
-      const textEntry =
-        target instanceof Element &&
-        target.closest('input, textarea, select, [contenteditable="true"]');
       const interactive =
         target instanceof Element &&
         target.closest('a, button, [role="button"], input, textarea, select');
-
-      if (textEntry) {
-        root.dataset.cursorNative = 'true';
-      } else {
-        root.dataset.cursorNative = 'false';
-      }
-
-      root.dataset.cursorHover = interactive && !textEntry ? 'true' : 'false';
+      root.dataset.cursorHover = interactive ? 'true' : 'false';
     };
 
     const activate = (action: string) => {
@@ -86,7 +76,6 @@ export default function AnimatedCursor() {
       delete root.dataset.customCursor;
       delete root.dataset.cursorVisible;
       delete root.dataset.cursorHover;
-      delete root.dataset.cursorNative;
       delete root.dataset.cursorAction;
       delete root.dataset.cursorMotion;
       lastPosition.current = null;

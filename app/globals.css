@@ -117,9 +117,8 @@
 .animated-cursor__antenna::before{content:"";position:absolute;left:-2px;top:-3px;width:8px;height:8px;border:2px solid var(--accent);border-radius:50%;background:var(--surface);animation:robot-sensor 1.8s ease-in-out infinite}
 .animated-cursor__ear{position:absolute;top:21px;width:4px;height:10px;border-radius:3px;background:color-mix(in srgb,var(--accent) 70%,#fff)}
 .animated-cursor__ear--left{left:-1px}.animated-cursor__ear--right{right:-1px}
-html[data-custom-cursor=true]:not([data-cursor-native=true]) *,html[data-custom-cursor=true]:not([data-cursor-native=true]) *::before,html[data-custom-cursor=true]:not([data-cursor-native=true]) *::after{cursor:none!important}
+html[data-custom-cursor=true] *,html[data-custom-cursor=true] *::before,html[data-custom-cursor=true] *::after{cursor:none!important}
 html[data-cursor-visible=true] .animated-cursor__robot,html[data-cursor-visible=true] .animated-cursor__ring{opacity:1}
-html[data-cursor-native=true] .animated-cursor__robot,html[data-cursor-native=true] .animated-cursor__ring{opacity:0}
 html[data-cursor-hover=true] .animated-cursor__ring{width:52px;height:52px;margin:-26px 0 0 -26px;background:color-mix(in srgb,var(--accent) 12%,transparent)}
 html[data-cursor-motion=move] .animated-cursor__robot .animated-cursor__head{filter:brightness(1.12)}
 html[data-cursor-action=left-click] .animated-cursor__robot{animation:robot-click .36s ease}
