@@ -64,9 +64,9 @@
 .spin{animation:rz-spin 1s linear infinite}@keyframes rz-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}}
 .offline-note{font-size:12px;white-space:nowrap}
-.workspace-loading{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:24px;text-align:center;color:var(--muted);background:color-mix(in srgb,var(--bg) 42%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.workspace-loading{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:24px;text-align:center;color:var(--muted);background:color-mix(in srgb,var(--bg) 32%,transparent);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
 .workspace-loading::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 42%,color-mix(in srgb,var(--accent) 18%,transparent),transparent 42%),radial-gradient(ellipse at 20% 85%,color-mix(in srgb,var(--accent) 9%,transparent),transparent 34%)}
-.workspace-loading__card{position:relative;display:grid;justify-items:center;min-width:min(300px,100%);padding:38px 42px 32px;border:1px solid color-mix(in srgb,var(--border) 75%,transparent);border-radius:22px;background:color-mix(in srgb,var(--surface) 78%,transparent);box-shadow:0 20px 70px color-mix(in srgb,var(--text) 12%,transparent);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+.workspace-loading__card{position:relative;display:grid;justify-items:center;min-width:min(300px,100%);padding:24px 32px;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
 .workspace-loading__card p{margin:22px 0 0;font-size:14px;font-weight:550;color:var(--text);animation:loader-message 1.8s ease-in-out infinite}
 .workspace-loading__card .secondary{margin-top:16px}
 .workspace-loading__robot{position:relative;display:block;width:72px;height:78px;animation:loader-bob 1.6s ease-in-out infinite;filter:drop-shadow(0 8px 14px color-mix(in srgb,var(--accent) 28%,transparent))}
