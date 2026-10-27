@@ -104,3 +104,14 @@
 .cur-error{margin:0;color:#d64545;font-size:13px}
 .cur-dirty{margin:0 0 14px;padding:10px 14px;background:var(--accent-soft);color:var(--text);border-radius:8px;font-size:13px}
 @media(max-width:600px){.cur-row{flex-wrap:wrap}.cur-subjects li{flex-wrap:wrap}.cur-subjects li>div{flex-basis:calc(100% - 50px)}}
+
+.animated-cursor{pointer-events:none}
+.animated-cursor__dot,.animated-cursor__ring{position:fixed;left:0;top:0;z-index:9999;pointer-events:none;opacity:0;transition:opacity .15s ease}
+.animated-cursor__dot{width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px color-mix(in srgb,var(--accent) 45%,transparent)}
+.animated-cursor__ring{width:34px;height:34px;margin:-17px 0 0 -17px;border:1px solid color-mix(in srgb,var(--accent) 65%,transparent);border-radius:50%;transition:left .1s ease-out,top .1s ease-out,opacity .15s ease,width .2s ease,height .2s ease,margin .2s ease,background .2s ease}
+html[data-custom-cursor=true]:not([data-cursor-native=true]) *,html[data-custom-cursor=true]:not([data-cursor-native=true]) *::before,html[data-custom-cursor=true]:not([data-cursor-native=true]) *::after{cursor:none!important}
+html[data-cursor-visible=true] .animated-cursor__dot,html[data-cursor-visible=true] .animated-cursor__ring{opacity:1}
+html[data-cursor-native=true] .animated-cursor__dot,html[data-cursor-native=true] .animated-cursor__ring{opacity:0}
+html[data-cursor-hover=true] .animated-cursor__dot{width:5px;height:5px;margin:-2.5px 0 0 -2.5px}
+html[data-cursor-hover=true] .animated-cursor__ring{width:46px;height:46px;margin:-23px 0 0 -23px;background:color-mix(in srgb,var(--accent) 12%,transparent)}
+@media(prefers-reduced-motion:reduce){.animated-cursor{display:none}}
