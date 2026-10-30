@@ -49,10 +49,13 @@ export async function POST(req: Request) {
 }
 export async function DELETE(req: Request) {
   if (!sameOrigin(req) || !await isAdmin()) return Response.json({ error: 'Administrator login required.' }, { status: 401 });
-  const id = new URL(req.url).searchParams.get('id');
-  if (!id || !/^[a-zA-Z0-9-]{1,100}$/.test(id)) return Response.json({ error: 'Invalid note ID.' }, { status: 400 });
+  const params = new URL(req.url).searchParams;
+  const ids = params.get('ids')?.split(',') || (params.get('id') ? [params.get('id')!] : []);
+  if (!ids.length || ids.some(id => !/^[a-zA-Z0-9-]{1,100}$/.test(id))) return Response.json({ error: 'Invalid note ID.' }, { status: 400 });
   try {
-    if (!await (await repository()).delete(id)) return Response.json({ error: 'Note not found.' }, { status: 404 });
-    return Response.json({ ok: true });
+    const db = await repository();
+    const deleted = await Promise.all(ids.map(id => db.delete(id)));
+    if (!deleted.some(Boolean)) return Response.json({ error: 'Note not found.' }, { status: 404 });
+    return Response.json({ ok: true, deleted: deleted.filter(Boolean).length });
   } catch { return unavailable(); }
 }

@@ -1,127 +1,41 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useRef } from 'react';
 
 export default function AnimatedCursor() {
-  const robot = useRef<HTMLSpanElement>(null);
-  const headphones = useRef<HTMLSpanElement>(null);
-  const actionTimeout = useRef<number | null>(null);
-  const movementTimeout = useRef<number | null>(null);
-  const lastPosition = useRef<{ x: number; y: number } | null>(null);
+  const cursor = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     const root = document.documentElement;
-    const motionQuery = window.matchMedia(
-      '(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)',
-    );
-
     const move = (event: PointerEvent) => {
-      if (!motionQuery.matches) {
-        leave();
-        return;
-      }
-
       if (event.pointerType !== 'mouse') return;
-
       root.dataset.customCursor = 'true';
       root.dataset.cursorVisible = 'true';
-      robot.current?.style.setProperty('left', `${event.clientX}px`);
-      robot.current?.style.setProperty('top', `${event.clientY}px`);
-      headphones.current?.style.setProperty('left', `${event.clientX}px`);
-      headphones.current?.style.setProperty('top', `${event.clientY}px`);
-
-      const previous = lastPosition.current;
-      if (previous) {
-        const dx = event.clientX - previous.x;
-        const dy = event.clientY - previous.y;
-        const tilt = Math.max(-18, Math.min(18, dx * 0.9));
-        const bob = Math.max(-4, Math.min(4, dy * 0.35));
-        robot.current?.style.setProperty('--robot-tilt', `${tilt * 0.45}deg`);
-        headphones.current?.style.setProperty('--headphone-bob', `${bob}px`);
-        root.dataset.cursorMotion = 'move';
-        if (movementTimeout.current !== null) window.clearTimeout(movementTimeout.current);
-        movementTimeout.current = window.setTimeout(() => {
-          delete root.dataset.cursorMotion;
-          robot.current?.style.setProperty('--robot-tilt', '0deg');
-          robot.current?.style.setProperty('--headphone-bob', '0px');
-        }, 130);
-      }
-      lastPosition.current = { x: event.clientX, y: event.clientY };
-
+      cursor.current?.style.setProperty('left', `${event.clientX}px`);
+      cursor.current?.style.setProperty('top', `${event.clientY}px`);
       const target = event.target;
-      const interactive =
-        target instanceof Element &&
-        target.closest('a, button, [role="button"], input, textarea, select');
-      root.dataset.cursorHover = interactive ? 'true' : 'false';
+      root.dataset.cursorHover = target instanceof Element && !!target.closest('a, button, [role="button"], input, textarea, select') ? 'true' : 'false';
     };
-
-    const activate = (action: string) => {
-      if (!motionQuery.matches) return;
-      root.dataset.customCursor = 'true';
-      root.dataset.cursorVisible = 'true';
-      root.dataset.cursorAction = '';
-      if (actionTimeout.current !== null) window.clearTimeout(actionTimeout.current);
-      window.requestAnimationFrame(() => {
-        root.dataset.cursorAction = action;
-        actionTimeout.current = window.setTimeout(() => {
-          delete root.dataset.cursorAction;
-        }, 500);
-      });
-    };
-
-    const press = (event: PointerEvent) => {
-      if (event.pointerType === 'mouse') activate(event.button === 2 ? 'right-click' : 'left-click');
-    };
-
-    const scroll = (event: WheelEvent) => {
-      activate(event.deltaY < 0 ? 'scroll-up' : 'scroll-down');
-    };
-
     const leave = () => {
       delete root.dataset.customCursor;
       delete root.dataset.cursorVisible;
       delete root.dataset.cursorHover;
-      delete root.dataset.cursorAction;
-      delete root.dataset.cursorMotion;
-      lastPosition.current = null;
-      if (actionTimeout.current !== null) window.clearTimeout(actionTimeout.current);
-      if (movementTimeout.current !== null) window.clearTimeout(movementTimeout.current);
     };
-    const motionChange = (event: MediaQueryListEvent) => {
-      if (!event.matches) leave();
-    };
-
     window.addEventListener('pointermove', move);
-    window.addEventListener('pointerdown', press);
-    window.addEventListener('wheel', scroll, { passive: true });
     window.addEventListener('pointerleave', leave);
-    motionQuery.addEventListener('change', motionChange);
-
     return () => {
       window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerdown', press);
-      window.removeEventListener('wheel', scroll);
       window.removeEventListener('pointerleave', leave);
-      motionQuery.removeEventListener('change', motionChange);
       leave();
     };
   }, []);
 
   return (
-    <span className="animated-cursor" aria-hidden="true">
-      <span className="animated-cursor__headphones" ref={headphones}>
-        <span className="animated-cursor__headband" />
-        <span className="animated-cursor__cup animated-cursor__cup--left" />
-        <span className="animated-cursor__cup animated-cursor__cup--right" />
-      </span>
-      <span className="animated-cursor__robot" ref={robot}>
-        <span className="animated-cursor__antenna" />
-        <span className="animated-cursor__head">
-          <span className="animated-cursor__eye" />
-          <span className="animated-cursor__eye" />
-          <span className="animated-cursor__mouth" />
-        </span>
-      </span>
+    <span ref={cursor} className="animated-cursor" aria-hidden="true">
+      <svg viewBox="0 0 28 28" width="28" height="28" focusable="false">
+        <path d="M3 2.5 3.2 23.1l5.8-5.2 3.7 7.3 4.1-2.1-3.7-7.1 7.4-1.2L3 2.5Z" fill="#ffffff" stroke="#4c78ff" strokeWidth="2.2" strokeLinejoin="round" />
+        <path d="M7 7.2 16.8 15l-5.4.9 3.4 6.5-1.7.9-3.4-6.6-3.1 2.8L7 7.2Z" fill="#4c78ff" opacity=".95" />
+      </svg>
     </span>
   );
 }
