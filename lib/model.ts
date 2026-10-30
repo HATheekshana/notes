@@ -2,6 +2,10 @@ import { DEFAULT_COURSES } from './curriculum-model.ts';
 // The built-in subjects (used until the administrator saves their own curriculum). The live list comes from /api/curriculum.
 export const subjects = DEFAULT_COURSES.flatMap(c => c.semesters.flatMap(s => s.subjects));
 export type Note = { id: string; subject: string; title: string; content: string; tags: string[]; published: boolean; updatedAt: string };
+export function noteTitleFromFileName(name: string): string {
+  const base = name.split(/[\\/]/).pop() || 'note';
+  return base.replace(/\.(md|markdown|txt)$/i, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) || 'Untitled note';
+}
 export function validateNote(input: unknown, validSubjects: readonly string[] = subjects.map(s => s.id)): Omit<Note,'id'|'updatedAt'> {
   if (!input || typeof input !== 'object') throw new Error('Note is required.');
   const v = input as Record<string,unknown>;

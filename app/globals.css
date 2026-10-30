@@ -39,6 +39,9 @@
 .text-button.inline{display:inline;margin:0;text-decoration:underline}
 @media(max-width:760px){.storage-card{margin-top:-8px}}
 
+/* Bulk note import */
+.bulk-upload-form{flex-wrap:wrap}.bulk-upload-form label{display:flex;align-items:center;gap:8px}.bulk-upload-form select{min-width:220px}.bulk-upload-form .bulk-publish{font-size:13px}.editor-bulk-note{margin:-8px 0 18px}
+
 /* Upload review panel */
 .upload-panel{margin:0 0 20px;padding:16px 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
 .upload-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.upload-head strong{display:block;font-size:14px;margin-bottom:3px}.upload-head span{font-size:12px;color:var(--muted)}.upload-head .upload-percent{font-size:18px;font-weight:700;color:var(--accent)}
