@@ -173,10 +173,10 @@ ANSWER: B
 INFO: Input size measures how much data an algorithm processes, such as the number of elements in a list.
 ---
 QUESTION 20:
-What is the complexity of comparing every pair of n elements?
-A) O(n)
-B) O(n log n)
-C) O(n squared)
-D) O(log n)
-ANSWER: C
-INFO: All pairs of n elements require n times n minus one divided by two comparisons, which is O(n squared).
+Which properties does binary search require? Select all that apply.
+A) The collection is sorted
+B) Elements can be accessed by position
+C) The collection must be a queue
+D) Elements must be unique
+ANSWERS: A, B
+INFO: Binary search needs sorted data and positional access to repeatedly check the middle element; duplicates and FIFO storage are not requirements.

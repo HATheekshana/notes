@@ -24,7 +24,7 @@ export interface Quiz {
 }
 
 export interface PublicQuiz extends Omit<Quiz, 'questions'> {
-  questions: Array<Omit<QuizQuestion, 'answer' | 'info'>>;
+  questions: Array<Omit<QuizQuestion, 'answer' | 'info'> & { multipleAnswers: boolean }>;
 }
 
 export interface QuizSummary {
@@ -107,9 +107,12 @@ export function parseQuizFile(text: string, subject: string): Omit<Quiz, 'id' | 
     const unique = new Set(options.map(option => option.key));
     if (unique.size !== options.length) throw new QuizInputError(`Question ${index + 1} has duplicate choices.`);
 
-    const answerMatch = block.match(/^ANSWER\s*:\s*([A-F])(?:\s*\([^)]*\))?\s*$/im);
-    const answer = answerMatch?.[1].toUpperCase();
-    if (!answer || !options.some(option => option.key === answer)) throw new QuizInputError(`Question ${index + 1} needs a valid "ANSWER: A-F" line.`);
+    const answerMatch = block.match(/^ANSWERS?\s*:\s*([A-F](?:\s*[,/&+]\s*[A-F])*)(?:\s*\([^)]*\))?\s*$/im);
+    const answer = answerMatch?.[1].toUpperCase().split(/\s*[,/&+]\s*/).map(key => key.trim()).filter(Boolean).sort().join(',');
+    const answerKeys = answer ? answer.split(',') : [];
+    if (!answer || answerKeys.some(key => !options.some(option => option.key === key)) || new Set(answerKeys).size !== answerKeys.length) {
+      throw new QuizInputError(`Question ${index + 1} needs a valid "ANSWER: A-F" or "ANSWERS: A, C" line.`);
+    }
     const infoMatch = block.match(/^INFO(?:RMATION)?\s*:\s*(.+)$/ims);
     const info = infoMatch ? infoMatch[1].split(/\n(?=(?:A|ANSWER|INFO)\s*[).:])/i)[0].trim() : '';
     if (!info) throw new QuizInputError(`Question ${index + 1} needs an "INFO: ..." explanation.`);
@@ -122,14 +125,16 @@ export function parseQuizFile(text: string, subject: string): Omit<Quiz, 'id' | 
 export function publicQuiz(quiz: Quiz): PublicQuiz {
   return {
     id: quiz.id, subject: quiz.subject, title: quiz.title, year: quiz.year, minutes: quiz.minutes, createdAt: quiz.createdAt,
-    questions: quiz.questions.map(({ id, prompt, options }) => ({ id, prompt, options })),
+    questions: quiz.questions.map(({ id, prompt, options, answer }) => ({ id, prompt, options, multipleAnswers: answer.includes(',') })),
   };
 }
 
-export function scoreQuiz(quiz: Quiz, answers: Record<string, string>): QuizResult {
+export function scoreQuiz(quiz: Quiz, answers: Record<string, string | string[]>): QuizResult {
   let correct = 0;
   const results = quiz.questions.map(question => {
-    const selected = answers[question.id]?.toUpperCase() || null;
+    const raw = answers[question.id];
+    const selectedKeys = Array.isArray(raw) ? raw.map(key => key.toUpperCase()) : typeof raw === 'string' ? [raw.toUpperCase()] : [];
+    const selected = selectedKeys.length ? selectedKeys.sort().join(',') : null;
     const isCorrect = selected === question.answer;
     if (isCorrect) correct++;
     return { id: question.id, prompt: question.prompt, selected, correct: question.answer, info: question.info, isCorrect };

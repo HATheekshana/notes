@@ -15,7 +15,7 @@ async function request(url: string, options?: RequestInit) {
 export default function Quizzes({ subject, subjectName, admin }: { subject: string; subjectName: string; admin: boolean }) {
   const [items, setItems] = useState<QuizSummary[]>([]);
   const [quiz, setQuiz] = useState<PublicQuiz | null>(null);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [result, setResult] = useState<QuizResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -80,18 +80,20 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'submit', subject, id: quiz.id, answers }),
       }));
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not submit the quiz.'); }
     finally { setBusy(false); }
   }
 
   async function remove(item: QuizSummary) {
-    if (!window.confirm(`Delete “${item.title}”? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete “${item.title}”? This cannot be undone.`)) return false;
     setBusy(true); setError('');
     try { await request(url + '&id=' + encodeURIComponent(item.id), { method: 'DELETE' }); await load(); setMessage('Quiz deleted.'); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not delete the quiz.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not delete the quiz.'); return false; }
     finally { setBusy(false); }
+    return true;
   }
+
+  const answeredCount = Object.values(answers).filter(answer => Array.isArray(answer) ? answer.length > 0 : !!answer).length;
 
   return <section className="quiz-section">
     <Link href={'/subjects/' + subject} className="text-button"><ArrowLeft size={16} />Back to {subject}</Link>
@@ -107,7 +109,15 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
         }} />
         <button className="primary" disabled={busy} onClick={() => input.current?.click()}><Upload size={16} />Add quiz TXT</button>
       </>}
-      {quiz && <button className="secondary" disabled={busy} onClick={() => { setQuiz(null); setResult(null); setAnswers({}); }}>All quizzes</button>}
+      {quiz && <div className="actions">
+        <button className="secondary quiz-back-button" disabled={busy} onClick={() => { setQuiz(null); setResult(null); setAnswers({}); }}><ArrowLeft size={16} />Back to quizzes</button>
+        {admin && items.find(item => item.id === quiz.id) && <button className="danger" disabled={busy} onClick={() => {
+          void (async () => {
+            const item = items.find(candidate => candidate.id === quiz.id);
+            if (item && await remove(item)) { setQuiz(null); setResult(null); setAnswers({}); }
+          })();
+        }}><Trash2 size={16} />Delete quiz</button>}
+      </div>}
     </div>
 
     {admin && !quiz && pendingFile && <form className="quiz-upload-form" onSubmit={e => { e.preventDefault(); void upload(pendingFile); }}>
@@ -123,7 +133,7 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
     {!quiz && <>
       <div className="quiz-format-note">
         <strong>TXT format</strong>
-        <p>Use TITLE and YEAR headers, then each QUESTION, A-F choices, ANSWER, and INFO explanation. Separate questions with ---.</p>
+        <p>Use TITLE and YEAR headers, then each QUESTION, A-F choices, ANSWER, and INFO explanation. Use ANSWERS: A, C for multiple answers. Separate questions with ---.</p>
       </div>
       {loading ? <p className="muted">Loading question papers…</p> : <div className="lesson-list">
         {items.map(item => <div className="lesson-row quiz-row" key={item.id}>
@@ -137,21 +147,35 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
     </>}
 
     {quiz && !result && <form className="quiz-paper" onSubmit={e => { e.preventDefault(); void submit(); }}>
-      <div className="quiz-paper-meta"><span>{Object.keys(answers).length} / {quiz.questions.length} answered</span></div>
+      <div className="quiz-paper-meta">
+        <span>{answeredCount} / {quiz.questions.length} answered</span>
+        <button className="primary quiz-submit" type="submit" disabled={busy || answeredCount !== quiz.questions.length}>Submit answers</button>
+      </div>
       {quiz.questions.map((question, index) => <fieldset className="quiz-question" key={question.id}>
-        <legend><span>{index + 1}</span>{question.prompt}</legend>
+        <legend><span>{index + 1}</span>{question.prompt}{question.multipleAnswers && <small> Select all correct answers</small>}</legend>
         <div className="quiz-options">
-          {question.options.map(option => <label key={option.key} className={answers[question.id] === option.key ? 'selected' : ''}>
-            <input type="radio" name={question.id} value={option.key} checked={answers[question.id] === option.key} onChange={() => setAnswers(current => ({ ...current, [question.id]: option.key }))} />
+          {question.options.map(option => <label key={option.key} className={(question.multipleAnswers ? (answers[question.id] as string[] | undefined)?.includes(option.key) : answers[question.id] === option.key) ? 'selected' : ''}>
+            <input type={question.multipleAnswers ? 'checkbox' : 'radio'} name={question.id} value={option.key} checked={question.multipleAnswers ? !!(answers[question.id] as string[] | undefined)?.includes(option.key) : answers[question.id] === option.key} onChange={() => {
+              setAnswers(current => {
+                if (question.multipleAnswers) {
+                  const selected = (current[question.id] as string[] | undefined) || [];
+                  const next = selected.includes(option.key) ? selected.filter(key => key !== option.key) : [...selected, option.key];
+                  const remaining = { ...current };
+                  if (next.length) remaining[question.id] = next;
+                  else delete remaining[question.id];
+                  return remaining;
+                }
+                return { ...current, [question.id]: option.key };
+              });
+            }} />
             <strong>{option.key}</strong><span>{option.text}</span>
           </label>)}
         </div>
       </fieldset>)}
-      <button className="primary quiz-submit" disabled={busy || Object.keys(answers).length !== quiz.questions.length}>Submit answers</button>
     </form>}
 
     {quiz && result && <section className="quiz-results" aria-live="polite">
-      <div className={'quiz-score ' + (result.score >= 50 ? 'passed' : '')}><div><span>Your score</span><strong>{result.score}%</strong></div><p>{result.correct} correct out of {result.total}</p></div>
+      <div className={'quiz-score ' + (result.score >= 50 ? 'passed' : '')}><div><span>Your score</span><strong>{result.score}%</strong></div><p>{result.correct} correct out of {result.total}</p><button className="secondary" type="button" onClick={() => { setResult(null); setAnswers({}); }}>Retry quiz</button></div>
       <h2>Review your answers</h2>
       {result.answers.map((answer, index) => <div className={'quiz-review ' + (answer.isCorrect ? 'correct' : 'wrong')} key={answer.id}>
         <span className="result-icon">{answer.isCorrect ? <Check size={18} /> : <X size={18} />}</span>
@@ -160,7 +184,6 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
           <span>{answer.info}</span>
         </div>
       </div>)}
-      <button className="secondary" onClick={() => { setResult(null); setAnswers({}); }}>Retry quiz</button>
     </section>}
   </section>;
 }

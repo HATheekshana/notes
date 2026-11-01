@@ -54,7 +54,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const body = await req.json() as { action?: string; subject?: string; id?: string; answers?: Record<string, string> };
+    const body = await req.json() as { action?: string; subject?: string; id?: string; answers?: Record<string, string | string[]> };
     if (body.action !== 'submit') return Response.json({ error: 'Invalid request.' }, { status: 400 });
     const subject = await subjectOf(body.subject);
     const quiz = await getQuiz(String(body.id || ''), subject);

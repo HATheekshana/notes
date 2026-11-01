@@ -27,7 +27,7 @@ INFO: A queue processes items first in, first out.
   assert.equal(parsed.title, 'Algorithms 2025');
   assert.equal(parsed.questions.length, 2);
   const quiz: Quiz = { ...parsed, id: 'quiz-1', createdAt: '2026-01-01' };
-  const result = scoreQuiz(quiz, { q1: 'A', q2: 'B' });
+  const result = scoreQuiz(quiz, { q1: 'A', q2: ['B'] });
   assert.equal(result.correct, 1);
   assert.equal(result.score, 50);
   assert.equal(result.answers[0].correct, 'B');
@@ -36,4 +36,20 @@ INFO: A queue processes items first in, first out.
 
 test('invalid quiz TXT files and missing explanations are rejected', () => {
   assert.throws(() => parseQuizFile('TITLE: Test\nQUESTION 1: Example\nA) One\nB) Two\nANSWER: A', 'FOA'), /INFO/);
+});
+
+test('multiple-answer questions are matched only when all choices are selected', () => {
+  const parsed = parseQuizFile(`TITLE: Mixed Answers
+QUESTION 1:
+Select both properties.
+A) Sorted
+B) Indexed
+C) FIFO
+ANSWERS: A, B
+INFO: Binary search needs sorted, indexed data.
+`, 'FOA');
+  const quiz = { ...parsed, id: 'mixed', createdAt: '2026-01-01' };
+  assert.equal(scoreQuiz(quiz, { q1: ['A', 'B'] }).correct, 1);
+  assert.equal(scoreQuiz(quiz, { q1: ['A'] }).correct, 0);
+  assert.equal(scoreQuiz(quiz, { q1: ['A', 'B', 'C'] }).correct, 0);
 });
