@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Check, ChevronRight, Clock, FileQuestion, Trash2, Upload, X } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, FileQuestion, Trash2, Upload, X } from 'lucide-react';
 import type { PublicQuiz, QuizResult, QuizSummary } from '@/lib/quizzes-model';
 
 async function request(url: string, options?: RequestInit) {
@@ -98,7 +98,7 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
     <div className="eyebrow">{subject} / QUESTION PAPERS</div>
     <div className="page-heading">
       <div><h1>{quiz ? quiz.title : 'Question papers'}<span className="heading-dot">.</span></h1>
-        <p className="muted">{quiz ? `${quiz.questions.length} questions · ${quiz.minutes} minutes` : `Past-paper quizzes for ${subjectName}.`}</p></div>
+        <p className="muted">{quiz ? `${quiz.questions.length} questions` : `Past-paper quizzes for ${subjectName}.`}</p></div>
       {admin && !quiz && <>
         <input ref={input} type="file" accept=".txt,text/plain" hidden disabled={busy} onChange={e => {
           const file = e.target.files?.[0];
@@ -123,12 +123,12 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
     {!quiz && <>
       <div className="quiz-format-note">
         <strong>TXT format</strong>
-        <p>Use TITLE, YEAR and TIME headers, then each QUESTION, A-F choices, ANSWER, and INFO explanation. Separate questions with ---.</p>
+        <p>Use TITLE and YEAR headers, then each QUESTION, A-F choices, ANSWER, and INFO explanation. Separate questions with ---.</p>
       </div>
       {loading ? <p className="muted">Loading question papers…</p> : <div className="lesson-list">
         {items.map(item => <div className="lesson-row quiz-row" key={item.id}>
           <span className="file-icon"><FileQuestion size={20} /></span>
-          <div><strong>{item.title}</strong><span>{item.year || 'Past paper'} · {item.questionCount} questions · {item.minutes} min</span></div>
+          <div><strong>{item.title}</strong><span>{item.year || 'Past paper'} · {item.questionCount} questions</span></div>
           <button className="secondary" disabled={busy} onClick={() => void openQuiz(item)}>Start quiz<ChevronRight size={16} /></button>
           {admin && <button className="icon-button" disabled={busy} aria-label={'Delete quiz ' + item.title} onClick={() => void remove(item)}><Trash2 size={17} /></button>}
         </div>)}
@@ -137,7 +137,7 @@ export default function Quizzes({ subject, subjectName, admin }: { subject: stri
     </>}
 
     {quiz && !result && <form className="quiz-paper" onSubmit={e => { e.preventDefault(); void submit(); }}>
-      <div className="quiz-paper-meta"><span><Clock size={16} />{quiz.minutes} minutes</span><span>{Object.keys(answers).length} / {quiz.questions.length} answered</span></div>
+      <div className="quiz-paper-meta"><span>{Object.keys(answers).length} / {quiz.questions.length} answered</span></div>
       {quiz.questions.map((question, index) => <fieldset className="quiz-question" key={question.id}>
         <legend><span>{index + 1}</span>{question.prompt}</legend>
         <div className="quiz-options">

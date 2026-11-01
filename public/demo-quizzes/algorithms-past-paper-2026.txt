@@ -1,0 +1,182 @@
+TITLE: Algorithms Past Paper 2026
+YEAR: 2026
+
+QUESTION 1:
+What is an algorithm?
+A) A programming language
+B) A finite sequence of steps used to solve a problem
+C) A computer memory unit
+D) A database table
+ANSWER: B
+INFO: An algorithm is a finite sequence of well-defined steps used to solve a problem.
+---
+QUESTION 2:
+Which notation describes an asymptotic upper bound?
+A) Omega notation
+B) Theta notation
+C) Big-O notation
+D) Alpha notation
+ANSWER: C
+INFO: Big-O notation describes an asymptotic upper bound.
+---
+QUESTION 3:
+What is the time complexity of binary search on a sorted array?
+A) O(1)
+B) O(n)
+C) O(log n)
+D) O(n log n)
+ANSWER: C
+INFO: Binary search halves the remaining search space on each step, giving O(log n).
+---
+QUESTION 4:
+Which sorting algorithm uses the divide-and-conquer approach?
+A) Bubble sort
+B) Selection sort
+C) Merge sort
+D) Insertion sort
+ANSWER: C
+INFO: Merge sort divides the array, sorts each half, and merges the results.
+---
+QUESTION 5:
+What does a stack follow?
+A) FIFO
+B) LIFO
+C) Random order
+D) Priority order
+ANSWER: B
+INFO: A stack follows Last In, First Out.
+---
+QUESTION 6:
+What is the time complexity of accessing an element by index in an array?
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n squared)
+ANSWER: A
+INFO: Arrays can calculate the address of an indexed element directly in constant time.
+---
+QUESTION 7:
+Which data structure follows FIFO?
+A) Stack
+B) Queue
+C) Tree
+D) Graph
+ANSWER: B
+INFO: A queue follows First In, First Out.
+---
+QUESTION 8:
+What is a queue used to implement?
+A) Backtracking
+B) Breadth-first search
+C) Recursion
+D) Compilation
+ANSWER: B
+INFO: Breadth-first search commonly uses a queue to visit vertices level by level.
+---
+QUESTION 9:
+What is recursion?
+A) A loop inside a database
+B) A function calling itself
+C) Sorting without comparisons
+D) Memory allocation by the operating system
+ANSWER: B
+INFO: Recursion is a technique in which a function calls itself with a smaller or simpler input.
+---
+QUESTION 10:
+Which traversal visits nodes in left, root, right order?
+A) Preorder
+B) Postorder
+C) Inorder
+D) Level order
+ANSWER: C
+INFO: Inorder traversal visits the left subtree, then the root, then the right subtree.
+---
+QUESTION 11:
+What is the average time complexity of searching in a hash table?
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n log n)
+ANSWER: A
+INFO: Hash-table lookup has expected constant time, assuming an effective hash function.
+---
+QUESTION 12:
+Which algorithm finds the shortest path in a weighted graph with non-negative edges?
+A) Dijkstra's algorithm
+B) Bubble sort
+C) Binary search
+D) Linear search
+ANSWER: A
+INFO: Dijkstra's algorithm computes shortest paths for graphs with non-negative edge weights.
+---
+QUESTION 13:
+A greedy algorithm makes which kind of choice?
+A) Locally optimal choice
+B) Globally exhaustive choice
+C) Random choice
+D) Reverse choice
+ANSWER: A
+INFO: A greedy algorithm makes a locally optimal choice at each step.
+---
+QUESTION 14:
+Dynamic programming usually solves problems by using:
+A) Overlapping subproblems and optimal substructure
+B) Infinite loops
+C) Random sampling
+D) External sorting only
+ANSWER: A
+INFO: Dynamic programming combines overlapping subproblems with optimal substructure.
+---
+QUESTION 15:
+Which graph traversal uses a stack or recursion?
+A) Breadth-first search
+B) Depth-first search
+C) Linear search
+D) Binary search
+ANSWER: B
+INFO: Depth-first search explores a branch deeply before backtracking, commonly using a stack or recursion.
+---
+QUESTION 16:
+What is the worst-case time complexity of linear search?
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n log n)
+ANSWER: C
+INFO: Linear search may inspect every element in the worst case.
+---
+QUESTION 17:
+What is the space complexity of a one-dimensional array of size n?
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n squared)
+ANSWER: C
+INFO: An array storing n elements requires O(n) storage.
+---
+QUESTION 18:
+Which operation is normally fastest at the front of a linked list?
+A) Insert
+B) Accessing an element by index
+C) Binary search
+D) Hashing
+ANSWER: A
+INFO: Inserting at the head of a linked list can be done by changing the head pointer in O(1) time.
+---
+QUESTION 19:
+Which is the best definition of input size?
+A) The number of bytes on disk permanently
+B) The amount of data an algorithm processes
+C) The number of source-code lines
+D) The CPU temperature
+ANSWER: B
+INFO: Input size measures how much data an algorithm processes, such as the number of elements in a list.
+---
+QUESTION 20:
+What is the complexity of comparing every pair of n elements?
+A) O(n)
+B) O(n log n)
+C) O(n squared)
+D) O(log n)
+ANSWER: C
+INFO: All pairs of n elements require n times n minus one divided by two comparisons, which is O(n squared).
